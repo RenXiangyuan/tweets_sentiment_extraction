@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
-import tokenizers
 import torch
 from torch.utils.data import DataLoader
 import transformers
@@ -10,7 +9,7 @@ from tqdm import tqdm
 
 from transformers import AdamW
 from transformers import get_linear_schedule_with_warmup
-from utils import jaccard, AverageMeter, EarlyStopping, calculate_jaccard_score
+from utils import AverageMeter, EarlyStopping, calculate_jaccard_score
 from data import TweetDataset
 from lovasz import lovasz_hinge
 
@@ -28,6 +27,11 @@ class TweetModel(transformers.BertPreTrainedModel):
         self.drop_out = nn.Dropout(0.1)
         self.l0 = nn.Linear(conf.hidden_size * 2, 2)
         torch.nn.init.normal_(self.l0.weight, std=0.02)
+
+        if config.multi_sent:
+            self.sent_dropout = nn.Dropout(0.1)
+            self.sent_classifier = nn.Linear(conf.hidden_size, len(config.multi_sent_class))
+            torch.nn.init.normal_(self.sent_classifier.weight, std=0.02)
 
         if config.do_IO:
             self.token_dropout = nn.Dropout(0.1)
@@ -64,20 +68,33 @@ class TweetModel(transformers.BertPreTrainedModel):
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
 
-        if not config.do_IO:
-            return start_logits, end_logits
+        if config.multi_sent:
+            cls_hidden_state = sequence_output[:, 0, :]
+            cls_hidden_state = self.sent_dropout(cls_hidden_state)
+            cls_logit = self.sent_classifier(cls_hidden_state)
+            return start_logits, end_logits, cls_logit
 
-        sequence_output = self.token_dropout(sequence_output)
-        token_logits = self.token_classifier(sequence_output)
-        return start_logits, end_logits, token_logits
+        if config.do_IO:
+            sequence_output = self.token_dropout(sequence_output)
+            token_logits = self.token_classifier(sequence_output)
+            return start_logits, end_logits, token_logits
+
+        return start_logits, end_logits
 
 
 def loss_fn(start_logits, end_logits, start_positions, end_positions,
-            token_logits=None, token_labels=None, mask=None):
+            cls_logit=None, cls_label=None, token_logits=None, token_labels=None, mask=None):
     loss_fct = nn.CrossEntropyLoss()
     start_loss = loss_fct(start_logits, start_positions)
     end_loss = loss_fct(end_logits, end_positions)
     total_loss = (start_loss + end_loss)
+
+    if config.multi_sent:
+        cls_loss_fct = nn.CrossEntropyLoss()
+        multi_sent_loss = cls_loss_fct(cls_logit, cls_label)
+        # print(total_loss, multi_sent_loss)
+        return total_loss + config.alpha_multi_sent * multi_sent_loss
+
     if not config.do_IO:
         return total_loss
 
@@ -147,7 +164,11 @@ def train_fn(data_loader, model, optimizer, device, scheduler=None):
             token_type_ids=token_type_ids
         )
         start_logits, end_logits = model_out[0], model_out[1]
-        if not config.do_IO:
+        if config.multi_sent:
+            cls_labels = d["cls_labels"].to(device, dtype=torch.long)
+            cls_logits = model_out[2]
+            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
+        elif not config.do_IO:
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end)
         else:
             token_logits = model_out[2]
@@ -210,6 +231,8 @@ def eval_fn(data_loader, model, device):
             targets_end = targets_end.to(device, dtype=torch.long)
             labels = labels.to(device, dtype=torch.long)
 
+            if config.multi_sent:
+                cls_labels = d["cls_labels"].to(device, dtype=torch.long)
 
             model_out= model(
                 ids=ids,
@@ -217,7 +240,10 @@ def eval_fn(data_loader, model, device):
                 token_type_ids=token_type_ids
             )
             start_logits, end_logits = model_out[0], model_out[1]
-            if not config.do_IO:
+            if config.multi_sent:
+                cls_logits = model_out[2]
+                loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
+            elif not config.do_IO:
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end)
             else:
                 token_logits = model_out[2]
@@ -263,6 +289,7 @@ def train(fold, config):
         sentiment=df_train.sentiment.values,
         selected_text=df_train.selected_text.values,
         config=config,
+        multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent else None,
     )
 
     train_data_loader = DataLoader(
@@ -276,6 +303,7 @@ def train(fold, config):
         sentiment=df_valid.sentiment.values,
         selected_text=df_valid.selected_text.values,
         config=config,
+        multi_sentiment_cls=df_train.extra_sentiment.values if config.multi_sent else None,
     )
 
     valid_data_loader = DataLoader(
@@ -328,7 +356,7 @@ def train(fold, config):
     return jaccard_list
 
 
-def ensemble_infer(model_paths=[]):
+def ensemble_infer(model_paths, config):
     if not model_paths:
         assert all(os.path.exists(p) for p in model_paths), f"model_paths不合法"
 
@@ -478,6 +506,7 @@ if __name__ == '__main__':
     nohup python roberta-5-fold.py --cuda_device 0 --lr 5 --bs 128 > .log 2>&1 &
     '''
     import argparse
+    import os
     parser = argparse.ArgumentParser()
 
     # Required parameters
@@ -504,79 +533,19 @@ if __name__ == '__main__':
         help="batch size",
     )
     args = parser.parse_args()
-    args.cuda_device='7'
-    args.lr = 3
 
-    import os
+    from config import config
+    config.lr = args.lr * 1e-5
+    config.batch_size = args.bs
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
+
+    config.lr = 5e-5
+    config.batch_size = 128
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    print("Warning, Use Hardcode Setting, not argparser Setting")
+
     from utils import set_seed
 
-    class Config(object):
-        def __init__(self, train_dir, model_save_dir, batch_size=128, seed=42, lr=3e-5, model_type='roberta', alphe=0.3, do_IO=False, smooth=0):
-            self.seed=seed
-            self.lr = lr
-            self.model_type = model_type
-            self.TRAINING_FILE = train_dir  # '/data/nfs/fangzhiqiang/nlp_data/tweet_extraction/folds/train_folds.csv'# ak数据
-            self.alpha = alphe
-            self.do_IO = do_IO
-            self.TRAIN_BATCH_SIZE = batch_size  # 16
-            self.MODEL_SAVE_DIR = model_save_dir + f'/{round(self.lr*1e5)}e-05lr_{batch_size}bs_{self.seed}sd'
-            self.smooth = smooth
-            if smooth > 0:
-                self.MODEL_SAVE_DIR += f"_{smooth}ls"
-            if self.do_IO:
-                self.MODEL_SAVE_DIR += f"_{alphe}alpha"
-
-
-            self.MAX_LEN = 192
-            # self.loss_type = 'bce'
-            self.loss_type = 'lovasz'
-            self.eps=1e-6
-            self.ACCUMULATION_STEPS = 1
-            self.VALID_BATCH_SIZE = 16
-            self.EPOCHS = 3
-            self.MAX_GRAD_NORM = 1.0
-
-            if self.model_type == 'roberta':
-                self.ROBERTA_PATH = "/mfs/fangzhiqiang/nlp_model/roberta-base"
-                # self.ROBERTA_PATH = "/mfs/pretrain/roberta-base-squad2"; print("Using Squad Roberta")  # Roberta Squad 2
-                self.TOKENIZER = tokenizers.ByteLevelBPETokenizer(
-                    vocab_file=f"{self.ROBERTA_PATH}/vocab.json",
-                    merges_file=f"{self.ROBERTA_PATH}/merges.txt",
-                    lowercase=True,
-                    add_prefix_space=True
-                )
-                self.model_config = transformers.BertConfig.from_pretrained(self.ROBERTA_PATH)
-                self.model_config.output_hidden_states = True
-            elif self.model_type == 'electra':
-                self.ELECTRA_PATH = "/mfs/fangzhiqiang/nlp_model/electra-base-discriminator-2/"
-                self.TOKENIZER = tokenizers.BertWordPieceTokenizer(f"{self.ELECTRA_PATH}/vocab.txt", lowercase=True)
-                self.model_config = transformers.ElectraConfig.from_pretrained(self.ELECTRA_PATH)
-                self.model_config.output_hidden_states = True
-
-        def print(self):
-            print(f"Seed\t: {self.seed}")
-            print(f"LR\t: {self.lr}")
-            print(f"Alpha\t: {self.alpha}")
-            print(f"model: {self.model_type}")
-            print(f"model_save_dir: {self.MODEL_SAVE_DIR}")
-            print(f"train_dir: {self.TRAINING_FILE}")
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
-    config = Config(
-        train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
-        model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
-        batch_size = args.bs,
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
-        seed=42,
-        lr=args.lr * 1e-5, # 9e-5,
-        # model_type='electra'
-        model_type='roberta',
-        alphe=0.5,
-        do_IO=False,
-    )
     config.print()
     set_seed(config.seed)
 
@@ -603,8 +572,8 @@ if __name__ == '__main__':
         #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_3_epoch_2.pth",
         #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_4_epoch_2.pth",
         # ]
-        # ensemble_infer(model_paths)
-        ensemble_infer()
+        # ensemble_infer(model_paths, config)
+        ensemble_infer(model_paths=None, config=config)
 
     # # 评估
     if "evaluate" in mode:

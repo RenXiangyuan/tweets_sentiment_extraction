@@ -25,7 +25,7 @@ class TweetDataset:
             raise NotImplementedError(f"{config.model_type} 不支持")
         self.smooth = config.smooth
 
-        self.do_multi_sent_task = config.multi_sent
+        self.multi_sent_loss_ratio = config.multi_sent_loss_ratio
         self.d_multi_sent = config.multi_sent_class
         self.multi_sent_cls = multi_sentiment_cls
 
@@ -54,7 +54,7 @@ class TweetDataset:
             'offsets': torch.tensor(data["offsets"], dtype=torch.long)
         }
 
-        if self.do_multi_sent_task:
+        if self.multi_sent_loss_ratio > 0:
             cls_label = self.d_multi_sent[self.multi_sent_cls[item]]
             res['cls_labels'] =  torch.tensor(cls_label, dtype=torch.long)
 

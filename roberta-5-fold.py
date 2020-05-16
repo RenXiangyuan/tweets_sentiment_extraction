@@ -28,7 +28,7 @@ class TweetModel(transformers.BertPreTrainedModel):
         self.l0 = nn.Linear(conf.hidden_size * 2, 2)
         torch.nn.init.normal_(self.l0.weight, std=0.02)
 
-        if config.multi_sent:
+        if config.multi_sent_loss_ratio > 0:
             self.sent_dropout = nn.Dropout(0.1)
             self.sent_classifier = nn.Linear(conf.hidden_size, len(config.multi_sent_class))
             torch.nn.init.normal_(self.sent_classifier.weight, std=0.02)
@@ -68,7 +68,7 @@ class TweetModel(transformers.BertPreTrainedModel):
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
 
-        if config.multi_sent:
+        if config.multi_sent_loss_ratio > 0:
             cls_hidden_state = sequence_output[:, 0, :]
             cls_hidden_state = self.sent_dropout(cls_hidden_state)
             cls_logit = self.sent_classifier(cls_hidden_state)
@@ -89,11 +89,11 @@ def loss_fn(start_logits, end_logits, start_positions, end_positions,
     end_loss = loss_fct(end_logits, end_positions)
     total_loss = (start_loss + end_loss)
 
-    if config.multi_sent:
+    if config.multi_sent_loss_ratio > 0:
         cls_loss_fct = nn.CrossEntropyLoss()
         multi_sent_loss = cls_loss_fct(cls_logit, cls_label)
         # print(total_loss, multi_sent_loss)
-        return total_loss + config.alpha_multi_sent * multi_sent_loss
+        return total_loss + config.multi_sent_loss_ratio * multi_sent_loss
 
     if not config.do_IO:
         return total_loss
@@ -164,7 +164,7 @@ def train_fn(data_loader, model, optimizer, device, scheduler=None):
             token_type_ids=token_type_ids
         )
         start_logits, end_logits = model_out[0], model_out[1]
-        if config.multi_sent:
+        if config.multi_sent_loss_ratio > 0:
             cls_labels = d["cls_labels"].to(device, dtype=torch.long)
             cls_logits = model_out[2]
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
@@ -231,17 +231,15 @@ def eval_fn(data_loader, model, device):
             targets_end = targets_end.to(device, dtype=torch.long)
             labels = labels.to(device, dtype=torch.long)
 
-            if config.multi_sent:
-                cls_labels = d["cls_labels"].to(device, dtype=torch.long)
-
             model_out= model(
                 ids=ids,
                 mask=mask,
                 token_type_ids=token_type_ids
             )
             start_logits, end_logits = model_out[0], model_out[1]
-            if config.multi_sent:
+            if config.multi_sent_loss_ratio > 0:
                 cls_logits = model_out[2]
+                cls_labels = d["cls_labels"].to(device, dtype=torch.long)
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
             elif not config.do_IO:
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end)
@@ -289,13 +287,13 @@ def train(fold, config):
         sentiment=df_train.sentiment.values,
         selected_text=df_train.selected_text.values,
         config=config,
-        multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent else None,
+        multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
     )
 
     train_data_loader = DataLoader(
         train_dataset,
         batch_size=config.TRAIN_BATCH_SIZE,
-        num_workers=4
+        num_workers=config.n_worker_train,
     )
 
     valid_dataset = TweetDataset(
@@ -303,7 +301,7 @@ def train(fold, config):
         sentiment=df_valid.sentiment.values,
         selected_text=df_valid.selected_text.values,
         config=config,
-        multi_sentiment_cls=df_train.extra_sentiment.values if config.multi_sent else None,
+        multi_sentiment_cls=df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
     )
 
     valid_data_loader = DataLoader(
@@ -357,7 +355,7 @@ def train(fold, config):
 
 
 def ensemble_infer(model_paths, config):
-    if not model_paths:
+    if model_paths:
         assert all(os.path.exists(p) for p in model_paths), f"model_paths不合法"
 
     df_test = pd.read_csv("/mfs/renxiangyuan/tweets/data/test.csv")
@@ -474,11 +472,23 @@ def ensemble_infer(model_paths, config):
             )
             outputs_start5, outputs_end5 = out5[0], out5[1]
 
+            # ensemble logits
             outputs_start = (outputs_start1 + outputs_start2 + outputs_start3 + outputs_start4 + outputs_start5) / 5
             outputs_end = (outputs_end1 + outputs_end2 + outputs_end3 + outputs_end4 + outputs_end5) / 5
 
             outputs_start = torch.softmax(outputs_start, dim=1).cpu().detach().numpy()
             outputs_end = torch.softmax(outputs_end, dim=1).cpu().detach().numpy()
+
+            # ensemble probs
+            # outputs_starts = [torch.softmax(outputs_start, dim=1).cpu().detach().numpy() for outputs_start in [
+            #     outputs_start1, outputs_start2, outputs_start3, outputs_start4, outputs_start5
+            # ]]
+            # outputs_ends = [torch.softmax(outputs_end, dim=1).cpu().detach().numpy() for outputs_end in [
+            #     outputs_end1, outputs_end2, outputs_end3, outputs_end4, outputs_end5
+            # ]]
+            # outputs_start = np.mean(outputs_starts, axis=0)
+            # outputs_end = np.mean(outputs_ends, axis=0)
+
             # jaccard_scores = []
             for px, tweet in enumerate(orig_tweet):
                 selected_tweet = orig_selected[px]
@@ -534,15 +544,34 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
-    from config import config
-    config.lr = args.lr * 1e-5
-    config.batch_size = args.bs
+    from config import Config
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
 
-    config.lr = 5e-5
-    config.batch_size = 128
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    args.lr = 10
+    args.bs= 128
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     print("Warning, Use Hardcode Setting, not argparser Setting")
+
+    config = Config(
+        # train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
+        train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
+
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+        model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
+
+        batch_size=args.bs,
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
+        seed=42,
+        lr=args.lr * 1e-5,
+        # model_type='electra'
+        model_type='roberta',
+        alphe=0.5,
+        do_IO=False,
+        multi_sent_loss_ratio=0.1,
+    )
 
     from utils import set_seed
 

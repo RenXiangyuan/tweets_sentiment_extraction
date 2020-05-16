@@ -11,7 +11,7 @@ import tokenizers, transformers
 
 class Config(object):
     def __init__(self, train_dir, model_save_dir, batch_size=128, seed=42, lr=3e-5, model_type='roberta', alphe=0.3,
-                 do_IO=False, smooth=0, multi_sent=False):
+                 do_IO=False, smooth=0, multi_sent_loss_ratio=0.1):
         self.seed = seed
         self.lr = lr
         self.model_type = model_type
@@ -25,8 +25,9 @@ class Config(object):
             self.MODEL_SAVE_DIR += f"_{smooth}ls"
         if self.do_IO:
             self.MODEL_SAVE_DIR += f"_{alphe}alpha"
-        self.multi_sent = multi_sent
-        self.alpha_multi_sent = 0.3
+        self.multi_sent_loss_ratio = multi_sent_loss_ratio
+        if multi_sent_loss_ratio > 0:
+            self.MODEL_SAVE_DIR += f"_{multi_sent_loss_ratio}beta"
         self.multi_sent_class = {'anger': 0, 'boredom': 1, 'empty': 2, 'enthusiasm': 3, 'fun': 4, 'happiness': 5,
                                  'hate': 6, 'love': 7, 'neutral': 8, 'relief': 9, 'sadness': 10, 'surprise': 11,
                                  'worry': 12}
@@ -38,6 +39,7 @@ class Config(object):
         self.VALID_BATCH_SIZE = 16
         self.EPOCHS = 3
         self.MAX_GRAD_NORM = 1.0
+        self.n_worker_train = 16
 
         if self.model_type == 'roberta':
             self.ROBERTA_PATH = "/mfs/fangzhiqiang/nlp_model/roberta-base"
@@ -59,29 +61,8 @@ class Config(object):
     def print(self):
         print(f"Seed\t: {self.seed}")
         print(f"Learning Rate\t: {self.lr}")
-        print(f"Batch Size\t: {self.batch_size}")
+        print(f"Batch Size\t: {self.TRAIN_BATCH_SIZE}")
         print(f"Alpha\t: {self.alpha}")
         print(f"model: {self.model_type}")
         print(f"model_save_dir: {self.MODEL_SAVE_DIR}")
         print(f"train_dir: {self.TRAINING_FILE}")
-
-config = Config(
-        # train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
-        train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
-
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
-        model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
-
-        batch_size = 32,
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
-        seed=42,
-        lr=3e-5,
-        # model_type='electra'
-        model_type='roberta',
-        alphe=0.5,
-        do_IO=False,
-        multi_sent = True,
-    )

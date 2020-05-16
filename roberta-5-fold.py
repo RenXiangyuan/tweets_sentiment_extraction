@@ -474,13 +474,16 @@ def ensemble_infer(model_paths=[]):
 
 
 if __name__ == '__main__':
+    '''
+    nohup python roberta-5-fold.py --cuda_device 0 --lr 5 --bs 128 > .log 2>&1 &
+    '''
     import argparse
     parser = argparse.ArgumentParser()
 
     # Required parameters
     parser.add_argument(
         "--cuda_device",
-        default='9',
+        default='0',
         type=str,
         required=False,
         help="Which GPU To Use",
@@ -493,9 +496,16 @@ if __name__ == '__main__':
         required=False,
         help="Learning Rate(1e-5)",
     )
+    parser.add_argument(
+        "--bs",
+        default=32,
+        type=int,
+        required=False,
+        help="batch size",
+    )
     args = parser.parse_args()
-    args.cuda_device='9'
-    args.lr = 10
+    args.cuda_device='7'
+    args.lr = 3
 
     import os
     from utils import set_seed
@@ -517,7 +527,7 @@ if __name__ == '__main__':
                 self.MODEL_SAVE_DIR += f"_{alphe}alpha"
 
 
-            self.MAX_LEN = 128
+            self.MAX_LEN = 192
             # self.loss_type = 'bce'
             self.loss_type = 'lovasz'
             self.eps=1e-6
@@ -528,6 +538,7 @@ if __name__ == '__main__':
 
             if self.model_type == 'roberta':
                 self.ROBERTA_PATH = "/mfs/fangzhiqiang/nlp_model/roberta-base"
+                # self.ROBERTA_PATH = "/mfs/pretrain/roberta-base-squad2"; print("Using Squad Roberta")  # Roberta Squad 2
                 self.TOKENIZER = tokenizers.ByteLevelBPETokenizer(
                     vocab_file=f"{self.ROBERTA_PATH}/vocab.json",
                     merges_file=f"{self.ROBERTA_PATH}/merges.txt",
@@ -552,23 +563,28 @@ if __name__ == '__main__':
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
     config = Config(
-        # train_dir= '/home/renxiangyuan/NLP/data/clean_data/train_filter_5.csv',
         train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',
-        model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+        model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
+        batch_size = args.bs,
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
         seed=42,
         lr=args.lr * 1e-5, # 9e-5,
         # model_type='electra'
         model_type='roberta',
         alphe=0.5,
-        do_IO=True,
+        do_IO=False,
     )
     config.print()
     set_seed(config.seed)
-    mode = "train"
+
+    mode = ["train", "test"]
+    # mode = ['evaluate']
 
     # 训练
-    if mode == "train":
+    if "train" in mode:
         os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
         jaccard_scores = []
         for i in range(5):
@@ -579,18 +595,19 @@ if __name__ == '__main__':
         config.print()
 
     # 测试
-    # model_paths = [
-    #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_0_epoch_3.pth",
-    #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_42sd/model_1_epoch_2.pth",
-    #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_2_epoch_3.pth",
-    #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_3_epoch_2.pth",
-    #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_4_epoch_2.pth",
-    # ]
-    # ensemble_infer(model_paths)
-    # ensemble_infer()
+    if "test" in mode:
+        # model_paths = [
+        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_0_epoch_3.pth",
+        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_42sd/model_1_epoch_2.pth",
+        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_2_epoch_3.pth",
+        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_3_epoch_2.pth",
+        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_4_epoch_2.pth",
+        # ]
+        # ensemble_infer(model_paths)
+        ensemble_infer()
 
     # # 评估
-    if mode=="evaluate":
+    if "evaluate" in mode:
         device = torch.device("cuda")
         model = TweetModel(conf=config.model_config)
         model.to(device)

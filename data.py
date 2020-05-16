@@ -35,7 +35,6 @@ class TweetDataset:
             self.sentiment[item],
             self.tokenizer,
             self.max_len,
-            self.smooth,
         )
 
         return {
@@ -52,7 +51,7 @@ class TweetDataset:
         }
 
     @staticmethod
-    def process_data_roberta(tweet, selected_text, sentiment, tokenizer, max_len, smooth):
+    def process_data_roberta(tweet, selected_text, sentiment, tokenizer, max_len):
         tweet = " " + " ".join(str(tweet).split())
         selected_text = " " + " ".join(str(selected_text).split())
 
@@ -181,6 +180,3 @@ class TweetDataset:
             'sentiment': sentiment,
             'offsets': tweet_offsets
         }
-
-
-

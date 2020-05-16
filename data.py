@@ -11,7 +11,7 @@ import numpy as np
 
 
 class TweetDataset:
-    def __init__(self, tweet, sentiment, selected_text, config):
+    def __init__(self, tweet, sentiment, selected_text, config, multi_sentiment_cls=None):
         self.tweet = tweet
         self.sentiment = sentiment
         self.selected_text = selected_text
@@ -25,6 +25,10 @@ class TweetDataset:
             raise NotImplementedError(f"{config.model_type} 不支持")
         self.smooth = config.smooth
 
+        self.multi_sent_loss_ratio = config.multi_sent_loss_ratio
+        self.d_multi_sent = config.multi_sent_class
+        self.multi_sent_cls = multi_sentiment_cls
+
     def __len__(self):
         return len(self.tweet)
 
@@ -37,7 +41,7 @@ class TweetDataset:
             self.max_len,
         )
 
-        return {
+        res = {
             'ids': torch.tensor(data["ids"], dtype=torch.long),
             'mask': torch.tensor(data["mask"], dtype=torch.long),
             'token_type_ids': torch.tensor(data["token_type_ids"], dtype=torch.long),
@@ -49,6 +53,12 @@ class TweetDataset:
             'sentiment': data["sentiment"],
             'offsets': torch.tensor(data["offsets"], dtype=torch.long)
         }
+
+        if self.multi_sent_loss_ratio > 0:
+            cls_label = self.d_multi_sent[self.multi_sent_cls[item]]
+            res['cls_labels'] =  torch.tensor(cls_label, dtype=torch.long)
+
+        return res
 
     @staticmethod
     def process_data_roberta(tweet, selected_text, sentiment, tokenizer, max_len):
@@ -106,7 +116,6 @@ class TweetDataset:
         labels = [0] * len(input_ids)
         for idx in range(targets_start, targets_end + 1):
             labels[idx] = 1
-
 
         return {
             'ids': input_ids,

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
+import os
 import torch
 from torch.utils.data import DataLoader
 import transformers
@@ -15,8 +16,9 @@ from lovasz import lovasz_hinge
 
 
 class TweetModel(transformers.BertPreTrainedModel):
-    def __init__(self, conf):
+    def __init__(self, conf, config):
         super(TweetModel, self).__init__(conf)
+        self.config = config
         if config.model_type == 'roberta':
             self.roberta = transformers.RobertaModel.from_pretrained(config.ROBERTA_PATH, config=conf)
         elif config.model_type == 'electra':
@@ -27,11 +29,20 @@ class TweetModel(transformers.BertPreTrainedModel):
             raise NotImplementedError(f"{config.model_type} 不支持")
 
 
-        # for param in self.rerta.parameters():
-        #     param.requires_grad=False
+        if config.froze_n_layers >= 0:
+            for param in self.roberta.embeddings.parameters():
+                param.requires_grad=False
+            print("Robeta Embedding Frozen")
+            for i in range(config.froze_n_layers):
+                for param in self.roberta.encoder.layer[i].parameters():
+                    param.requires_grad = False
+                print(f"Roberta Encoder Layer {i} Frozen")
 
         self.drop_out = nn.Dropout(0.1)
-        self.l0 = nn.Linear(conf.hidden_size * 3, 2)
+        self.l0 = nn.Linear(conf.hidden_size * 2, 2)
+        if config.cat_n_layers == 3:
+            self.l0 = nn.Linear(conf.hidden_size * 3, 2)
+
         torch.nn.init.normal_(self.l0.weight, std=0.02)
 
         if config.multi_sent_loss_ratio > 0:
@@ -51,19 +62,19 @@ class TweetModel(transformers.BertPreTrainedModel):
             torch.nn.init.normal_(self.token_classifier.weight, std=0.02)
 
     def forward(self, ids, mask, token_type_ids):
-        if config.model_type == 'roberta':
+        if self.config.model_type == 'roberta':
             sequence_output, _, out = self.roberta(
                 ids,
                 attention_mask=mask,
                 token_type_ids=token_type_ids
             )
-        elif config.model_type == 'electra':
+        elif self.config.model_type == 'electra':
             sequence_output, _, out = self.electra(
                 ids,
                 attention_mask=mask,
                 token_type_ids=token_type_ids
             )
-        elif config.model_type == 'bart':
+        elif self.config.model_type == 'bart':
             sequence_output, out, _, _ = self.bart(
                 ids,
                 attention_mask=mask,
@@ -72,7 +83,11 @@ class TweetModel(transformers.BertPreTrainedModel):
             )
         # out = self.backbone(ids, attention_mask=mask, token_type_ids=token_type_ids)[-1]
 
-        out = torch.cat((out[-1], out[-2], out[-3]), dim=-1)
+        if self.config.cat_n_layers == 2:
+            out = torch.cat((out[-1], out[-2]), dim=-1)
+        elif self.config.cat_n_layers == 3:
+            out = torch.cat((out[-1], out[-2], out[-3]), dim=-1)
+
         out = self.drop_out(out)
         logits = self.l0(out)
 
@@ -81,13 +96,13 @@ class TweetModel(transformers.BertPreTrainedModel):
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
 
-        if config.multi_sent_loss_ratio > 0:
+        if self.config.multi_sent_loss_ratio > 0:
             cls_hidden_state = sequence_output[:, 0, :]
             cls_hidden_state = self.sent_dropout(cls_hidden_state)
             cls_logit = self.sent_classifier(cls_hidden_state)
             return start_logits, end_logits, cls_logit
 
-        if config.do_IO:
+        if self.config.do_IO:
             sequence_output = self.token_dropout(sequence_output)
             token_logits = self.token_classifier(sequence_output)
             return start_logits, end_logits, token_logits
@@ -96,7 +111,7 @@ class TweetModel(transformers.BertPreTrainedModel):
 
 
 def loss_fn(start_logits, end_logits, start_positions, end_positions,
-            cls_logit=None, cls_label=None, token_logits=None, token_labels=None, mask=None):
+            cls_logit=None, cls_label=None, token_logits=None, token_labels=None, mask=None, config=None):
     loss_fct = nn.CrossEntropyLoss()
     start_loss = loss_fct(start_logits, start_positions)
     end_loss = loss_fct(end_logits, end_positions)
@@ -142,7 +157,7 @@ def token_loss_fn(token_logits, token_labels, mask):
     return loss
 
 
-def train_fn(data_loader, model, optimizer, device, scheduler=None):
+def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
     model.train()
     losses = AverageMeter()
     jaccards = AverageMeter()
@@ -180,13 +195,13 @@ def train_fn(data_loader, model, optimizer, device, scheduler=None):
         if config.multi_sent_loss_ratio > 0:
             cls_labels = d["cls_labels"].to(device, dtype=torch.long)
             cls_logits = model_out[2]
-            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
+            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels, config=config)
         elif not config.do_IO:
-            loss = loss_fn(start_logits, end_logits, targets_start, targets_end)
+            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, config=config)
         else:
             token_logits = model_out[2]
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end,
-                           token_logits, labels, mask)
+                           token_logits, labels, mask, config=config)
 
         if config.ACCUMULATION_STEPS > 1:
             loss = loss / config.ACCUMULATION_STEPS
@@ -218,7 +233,7 @@ def train_fn(data_loader, model, optimizer, device, scheduler=None):
         tk0.set_postfix(loss=losses.avg, jaccard=jaccards.avg)
 
 
-def eval_fn(data_loader, model, device):
+def eval_fn(data_loader, model, device, config):
     model.eval()
     losses = AverageMeter()
     jaccards = AverageMeter()
@@ -253,13 +268,13 @@ def eval_fn(data_loader, model, device):
             if config.multi_sent_loss_ratio > 0:
                 cls_logits = model_out[2]
                 cls_labels = d["cls_labels"].to(device, dtype=torch.long)
-                loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels)
+                loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels, config=config)
             elif not config.do_IO:
-                loss = loss_fn(start_logits, end_logits, targets_start, targets_end)
+                loss = loss_fn(start_logits, end_logits, targets_start, targets_end, config=config)
             else:
                 token_logits = model_out[2]
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end,
-                           token_logits, labels, mask)
+                           token_logits, labels, mask, config=config)
             outputs_start = torch.softmax(start_logits, dim=1).cpu().detach().numpy()
             outputs_end = torch.softmax(end_logits, dim=1).cpu().detach().numpy()
             jaccard_scores = []
@@ -324,7 +339,7 @@ def train(fold, config):
     )
 
     device = torch.device("cuda")
-    model = TweetModel(conf=config.model_config)
+    model = TweetModel(conf=config.model_config, config=config)
     model.to(device)
 
     num_train_steps = int(len(df_train) / config.TRAIN_BATCH_SIZE * config.EPOCHS)
@@ -344,8 +359,9 @@ def train(fold, config):
     es = EarlyStopping(patience=2, mode="max")
     print(f"{'-'*10}\nTraining is Starting for fold={fold}")
 
-    # I'm training only for 3 epochs even though I specified 5!!!
     jaccard_list = []
+    if fold == 2:  # 针对第三个Fold需要加强训练 TODO: 4Epoch
+        config.EPOCHS += 1
     for epoch in range(config.EPOCHS):
         model_save_dir = os.path.join(config.MODEL_SAVE_DIR, f'model_{fold}_epoch_{epoch+1}.pth')
         if os.path.exists(model_save_dir):
@@ -353,8 +369,8 @@ def train(fold, config):
             model.load_state_dict(torch.load(model_save_dir))
             continue
         print(f"\t\nEpoch:{epoch}")
-        train_fn(train_data_loader, model, optimizer, device, scheduler=scheduler)
-        jaccard = eval_fn(valid_data_loader, model, device)
+        train_fn(train_data_loader, model, optimizer, device, config, scheduler=scheduler)  # load schedular 会有不match
+        jaccard = eval_fn(valid_data_loader, model, device, config)
         jaccard_list.append(jaccard)
         print(f"Jaccard Score = {jaccard}")
         torch.save(model.state_dict(), model_save_dir)
@@ -362,7 +378,8 @@ def train(fold, config):
         if es.early_stop:
             print("Early stopping")
             break
-
+    if fold == 2:  # 针对第三个Fold需要加强训练
+        config.EPOCHS -= 1
     print("Jarccard Scores:", jaccard_list)
     return jaccard_list
 
@@ -375,7 +392,7 @@ def ensemble_infer(model_paths, config):
     df_test.loc[:, "selected_text"] = df_test.text.values
     device = torch.device("cuda")
 
-    model1 = TweetModel(conf=config.model_config)
+    model1 = TweetModel(conf=config.model_config, config=config)
     model1.to(device)
     if not model_paths:
         model1.load_state_dict(torch.load(os.path.join(config.MODEL_SAVE_DIR, "model_0.pth")))
@@ -383,7 +400,7 @@ def ensemble_infer(model_paths, config):
         model1.load_state_dict(torch.load(model_paths[0]))
     model1.eval()
 
-    model2 = TweetModel(conf=config.model_config)
+    model2 = TweetModel(conf=config.model_config, config=config)
     model2.to(device)
     if not model_paths:
         model2.load_state_dict(torch.load(os.path.join(config.MODEL_SAVE_DIR, "model_1.pth")))
@@ -391,7 +408,7 @@ def ensemble_infer(model_paths, config):
         model2.load_state_dict(torch.load(model_paths[1]))
     model2.eval()
 
-    model3 = TweetModel(conf=config.model_config)
+    model3 = TweetModel(conf=config.model_config, config=config)
     model3.to(device)
     if not model_paths:
         model3.load_state_dict(torch.load(os.path.join(config.MODEL_SAVE_DIR, "model_2.pth")))
@@ -399,7 +416,7 @@ def ensemble_infer(model_paths, config):
         model3.load_state_dict(torch.load(model_paths[2]))
     model3.eval()
 
-    model4 = TweetModel(conf=config.model_config)
+    model4 = TweetModel(conf=config.model_config, config=config)
     model4.to(device)
     if not model_paths:
         model4.load_state_dict(torch.load(os.path.join(config.MODEL_SAVE_DIR, "model_3.pth")))
@@ -407,7 +424,7 @@ def ensemble_infer(model_paths, config):
         model4.load_state_dict(torch.load(model_paths[3]))
     model4.eval()
 
-    model5 = TweetModel(conf=config.model_config)
+    model5 = TweetModel(conf=config.model_config, config=config)
     model5.to(device)
     if not model_paths:
         model5.load_state_dict(torch.load(os.path.join(config.MODEL_SAVE_DIR, "model_4.pth")))
@@ -526,10 +543,9 @@ def ensemble_infer(model_paths, config):
 
 if __name__ == '__main__':
     '''
-    nohup python roberta-5-fold.py --cuda_device 0 --lr 5 --bs 128 > .log 2>&1 &
+    nohup python model.py --cuda_device 0 --lr 5 --bs 128 > .log 2>&1 &
     '''
     import argparse
-    import os
     parser = argparse.ArgumentParser()
 
     # Required parameters
@@ -560,9 +576,9 @@ if __name__ == '__main__':
     from config import Config
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
 
-    args.lr = 1
+    args.lr = 5
     args.bs= 32
-    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
     print("Warning, Use Hardcode Setting, not argparser Setting")
 
     config = Config(
@@ -571,21 +587,22 @@ if __name__ == '__main__':
 
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+        model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak-cat2',  # 基于ak数据训
         # model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
         # model_save_dir='/mfs/renxiangyuan/tweets/output/bart-5-fold-ak',  # 基于ak数据训
-        model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
+        # model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
 
         batch_size=args.bs,
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
         seed=42,
         lr=args.lr * 1e-5,
-        model_type='bart',
-        # model_type='roberta',
+        # model_type='bart',
+        model_type='roberta',
         alphe=0.5,
         do_IO=False,
         multi_sent_loss_ratio=0,
-        max_seq_length=128,
+        max_seq_length=192,
         num_hidden_layers=13,
     )
 
@@ -595,6 +612,7 @@ if __name__ == '__main__':
     set_seed(config.seed)
 
     mode = ["train", "test"]
+    # mode = ["test"]
     # mode = ['evaluate']
 
     # 训练
@@ -611,11 +629,11 @@ if __name__ == '__main__':
     # 测试
     if "test" in mode:
         # model_paths = [
-        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_0_epoch_3.pth",
-        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_42sd/model_1_epoch_2.pth",
-        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_2_epoch_3.pth",
-        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/2e-05lr_69sd/model_3_epoch_2.pth",
-        #     "/data/nfs/renxiangyuan/tweets/result-modmodel/roberta-base-5-fold-ak/3e-05lr_5845sd/model_4_epoch_2.pth",
+        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_0_epoch_3.pth",
+        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_1_epoch_3.pth",
+        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_2_epoch_2.pth",
+        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_3_epoch_2.pth",
+        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_4_epoch_3.pth",
         # ]
         # ensemble_infer(model_paths, config)
         ensemble_infer(model_paths=None, config=config)
@@ -623,7 +641,7 @@ if __name__ == '__main__':
     # # 评估
     if "evaluate" in mode:
         device = torch.device("cuda")
-        model = TweetModel(conf=config.model_config)
+        model = TweetModel(conf=config.model_config, config=config)
         model.to(device)
         res = np.zeros((5,2))
         for fold in range(5):
@@ -648,7 +666,7 @@ if __name__ == '__main__':
             model.load_state_dict(torch.load(state_dict_dir))
             model.eval()
 
-            jaccards = eval_fn(valid_data_loader, model, device)
+            jaccards = eval_fn(valid_data_loader, model, device, config)
             print(jaccards)
             res[fold][0] = jaccards
 
@@ -657,7 +675,7 @@ if __name__ == '__main__':
             model.load_state_dict(torch.load(state_dict_dir))
             model.eval()
 
-            jaccards = eval_fn(valid_data_loader, model, device)
+            jaccards = eval_fn(valid_data_loader, model, device, config)
             print(jaccards)
             res[fold][1] = jaccards
         for i, res_i in enumerate(res):

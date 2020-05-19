@@ -21,11 +21,17 @@ class TweetModel(transformers.BertPreTrainedModel):
             self.roberta = transformers.RobertaModel.from_pretrained(config.ROBERTA_PATH, config=conf)
         elif config.model_type == 'electra':
             self.electra = transformers.ElectraModel.from_pretrained(config.ELECTRA_PATH, config=conf)
+        elif config.model_type == 'bart':
+            self.bart = transformers.BartModel.from_pretrained(config.BART_PATH, config=conf)
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
 
+
+        # for param in self.rerta.parameters():
+        #     param.requires_grad=False
+
         self.drop_out = nn.Dropout(0.1)
-        self.l0 = nn.Linear(conf.hidden_size * 2, 2)
+        self.l0 = nn.Linear(conf.hidden_size * 3, 2)
         torch.nn.init.normal_(self.l0.weight, std=0.02)
 
         if config.multi_sent_loss_ratio > 0:
@@ -57,9 +63,16 @@ class TweetModel(transformers.BertPreTrainedModel):
                 attention_mask=mask,
                 token_type_ids=token_type_ids
             )
+        elif config.model_type == 'bart':
+            sequence_output, out, _, _ = self.bart(
+                ids,
+                attention_mask=mask,
+                decoder_attention_mask=mask,
+                # token_type_ids=token_type_ids
+            )
         # out = self.backbone(ids, attention_mask=mask, token_type_ids=token_type_ids)[-1]
 
-        out = torch.cat((out[-1], out[-2]), dim=-1)
+        out = torch.cat((out[-1], out[-2], out[-3]), dim=-1)
         out = self.drop_out(out)
         logits = self.l0(out)
 
@@ -547,9 +560,9 @@ if __name__ == '__main__':
     from config import Config
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
 
-    args.lr = 10
-    args.bs= 128
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    args.lr = 1
+    args.bs= 32
+    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
     print("Warning, Use Hardcode Setting, not argparser Setting")
 
     config = Config(
@@ -559,23 +572,26 @@ if __name__ == '__main__':
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
-        model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
+        # model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
+        # model_save_dir='/mfs/renxiangyuan/tweets/output/bart-5-fold-ak',  # 基于ak数据训
+        model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
 
         batch_size=args.bs,
         # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
         seed=42,
         lr=args.lr * 1e-5,
-        # model_type='electra'
-        model_type='roberta',
+        model_type='bart',
+        # model_type='roberta',
         alphe=0.5,
         do_IO=False,
-        multi_sent_loss_ratio=0.1,
+        multi_sent_loss_ratio=0,
+        max_seq_length=128,
+        num_hidden_layers=13,
     )
 
     from utils import set_seed
 
-    config.print()
+    config.print_info()
     set_seed(config.seed)
 
     mode = ["train", "test"]
@@ -590,7 +606,7 @@ if __name__ == '__main__':
         for i, res_i in enumerate(jaccard_scores):
             print(i, res_i)
         print("mean", np.mean([max(scores) for scores in jaccard_scores]))
-        config.print()
+        config.print_info()
 
     # 测试
     if "test" in mode:

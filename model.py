@@ -21,22 +21,18 @@ class TweetModel(transformers.BertPreTrainedModel):
         self.config = config
         if config.model_type == 'roberta':
             self.roberta = transformers.RobertaModel.from_pretrained(config.ROBERTA_PATH, config=conf)
-        elif config.model_type == 'electra':
-            self.electra = transformers.ElectraModel.from_pretrained(config.ELECTRA_PATH, config=conf)
-        elif config.model_type == 'bart':
-            self.bart = transformers.BartModel.from_pretrained(config.BART_PATH, config=conf)
+        # elif config.model_type == 'electra':
+        #     self.electra = transformers.ElectraModel.from_pretrained(config.ELECTRA_PATH, config=conf)
+        # elif config.model_type == 'bart':
+        #     self.bart = transformers.BartModel.from_pretrained(config.BART_PATH, config=conf)
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
 
 
-        if config.froze_n_layers >= 0:
-            for param in self.roberta.embeddings.parameters():
-                param.requires_grad=False
-            print("Robeta Embedding Frozen")
-            for i in range(config.froze_n_layers):
-                for param in self.roberta.encoder.layer[i].parameters():
-                    param.requires_grad = False
-                print(f"Roberta Encoder Layer {i} Frozen")
+        if config.frozen_warmup and config.warmup_iters > 0:
+            self.frozen(12)
+        elif config.froze_n_layers >= 0:
+            self.frozen(config.froze_n_layers)
 
         self.drop_out = nn.Dropout(0.1)
         self.l0 = nn.Linear(conf.hidden_size * 2, 2)
@@ -60,6 +56,25 @@ class TweetModel(transformers.BertPreTrainedModel):
                 raise NotImplementedError(f"IO LOSS {config.loss_type} Invalid")
 
             torch.nn.init.normal_(self.token_classifier.weight, std=0.02)
+
+    def frozen(self, froze_n_layers):
+        for param in self.roberta.embeddings.parameters():
+            param.requires_grad = False
+        print("Robeta Embedding Frozen")
+        for i in range(froze_n_layers):
+            for param in self.roberta.encoder.layer[i].parameters():
+                param.requires_grad = False
+            print(f"Roberta Encoder Layer {i} Frozen")
+
+    def unfrozen(self, frozen_n_layers):
+        for param in self.roberta.encoder.layer[11].parameters():
+            if param.requires_grad:
+                return
+            break
+        for i in range(frozen_n_layers, 12):
+            for param in self.roberta.encoder.layer[i].parameters():
+                param.requires_grad = True
+            print(f"Roberta Encoder Layer {i} Unfrozen")
 
     def forward(self, ids, mask, token_type_ids):
         if self.config.model_type == 'roberta':
@@ -165,6 +180,11 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
     tk0 = tqdm(data_loader, total=len(data_loader))
 
     for bi, d in enumerate(tk0):
+
+        # TODO: 没有考虑 不froze 情况的unfrozen
+        if 0 < config.warmup_iters == bi \
+                and config.frozen_warmup and config.froze_n_layers >= 0:
+            model.unfrozen(config.froze_n_layers)
 
         ids = d["ids"]
         token_type_ids = d["token_type_ids"]
@@ -352,8 +372,8 @@ def train(fold, config):
     optimizer = AdamW(optimizer_parameters, lr=config.lr, eps=config.eps) # , eps=1e-8
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=0,
-        num_training_steps=num_train_steps
+        num_warmup_steps=config.warmup_iters,
+        num_training_steps=num_train_steps,
     )
 
     es = EarlyStopping(patience=2, mode="max")
@@ -540,144 +560,3 @@ def ensemble_infer(model_paths, config):
     sample.to_csv(sub_save_dir, index=False)
     print("Submission Saved:", sub_save_dir)
 
-
-if __name__ == '__main__':
-    '''
-    nohup python model.py --cuda_device 0 --lr 5 --bs 128 > .log 2>&1 &
-    '''
-    import argparse
-    parser = argparse.ArgumentParser()
-
-    # Required parameters
-    parser.add_argument(
-        "--cuda_device",
-        default='0',
-        type=str,
-        required=False,
-        help="Which GPU To Use",
-    )
-
-    parser.add_argument(
-        "--lr",
-        default=5,
-        type=int,
-        required=False,
-        help="Learning Rate(1e-5)",
-    )
-    parser.add_argument(
-        "--bs",
-        default=32,
-        type=int,
-        required=False,
-        help="batch size",
-    )
-    args = parser.parse_args()
-
-    from config import Config
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
-
-    args.lr = 5
-    args.bs= 32
-    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-    print("Warning, Use Hardcode Setting, not argparser Setting")
-
-    config = Config(
-        # train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
-        train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
-
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-sqauad-5-fold-ak',  # 基于ak数据训
-        model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak-cat2',  # 基于ak数据训
-        # model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
-        # model_save_dir='/mfs/renxiangyuan/tweets/output/bart-5-fold-ak',  # 基于ak数据训
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
-
-        batch_size=args.bs,
-        # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
-        seed=42,
-        lr=args.lr * 1e-5,
-        # model_type='bart',
-        model_type='roberta',
-        alphe=0.5,
-        do_IO=False,
-        multi_sent_loss_ratio=0,
-        max_seq_length=192,
-        num_hidden_layers=13,
-    )
-
-    from utils import set_seed
-
-    config.print_info()
-    set_seed(config.seed)
-
-    mode = ["train", "test"]
-    # mode = ["test"]
-    # mode = ['evaluate']
-
-    # 训练
-    if "train" in mode:
-        os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
-        jaccard_scores = []
-        for i in range(5):
-            jaccard_scores.append(train(fold=i, config=config))
-        for i, res_i in enumerate(jaccard_scores):
-            print(i, res_i)
-        print("mean", np.mean([max(scores) for scores in jaccard_scores]))
-        config.print_info()
-
-    # 测试
-    if "test" in mode:
-        # model_paths = [
-        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_0_epoch_3.pth",
-        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_1_epoch_3.pth",
-        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_2_epoch_2.pth",
-        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_3_epoch_2.pth",
-        #     "/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/5e-05lr_32bs_42sd_13layer/model_4_epoch_3.pth",
-        # ]
-        # ensemble_infer(model_paths, config)
-        ensemble_infer(model_paths=None, config=config)
-
-    # # 评估
-    if "evaluate" in mode:
-        device = torch.device("cuda")
-        model = TweetModel(conf=config.model_config, config=config)
-        model.to(device)
-        res = np.zeros((5,2))
-        for fold in range(5):
-            dfx = pd.read_csv(config.TRAINING_FILE)
-            df_valid = dfx[dfx.kfold == fold].reset_index(drop=True)
-
-            valid_dataset = TweetDataset(
-                tweet=df_valid.text.values,
-                sentiment=df_valid.sentiment.values,
-                selected_text=df_valid.selected_text.values,
-                config=config,
-            )
-
-            valid_data_loader = torch.utils.data.DataLoader(
-                valid_dataset,
-                batch_size=config.VALID_BATCH_SIZE,
-                num_workers=2
-            )
-
-            state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_2.pth")
-            print(state_dict_dir)
-            model.load_state_dict(torch.load(state_dict_dir))
-            model.eval()
-
-            jaccards = eval_fn(valid_data_loader, model, device, config)
-            print(jaccards)
-            res[fold][0] = jaccards
-
-            state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_3.pth")
-            print(state_dict_dir)
-            model.load_state_dict(torch.load(state_dict_dir))
-            model.eval()
-
-            jaccards = eval_fn(valid_data_loader, model, device, config)
-            print(jaccards)
-            res[fold][1] = jaccards
-        for i, res_i in enumerate(res):
-            print(i, res_i[0], res_i[1])
-        print("mean", np.mean([max(scores) for scores in res]))

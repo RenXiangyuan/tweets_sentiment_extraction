@@ -6,6 +6,8 @@
 @time: 2020-05-18 23:00
 """
 
+# nohup python main.py 1>.log 2>&1 &
+
 import argparse
 import os
 from model import train, ensemble_infer, TweetModel, TweetDataset, eval_fn
@@ -71,6 +73,8 @@ config = Config(
     num_hidden_layers=13,
     cat_n_layers=2,
     froze_n_layers=0,
+    warmup_samples=0,
+    frozen_warmup=False,
 )
 
 from utils import set_seed

@@ -55,12 +55,14 @@ config = Config(
     train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
 
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/fp16',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/cosine-scheduler',  # 基于ak数据训
     model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/cosine-scheduler',  # 基于ak数据训
     # model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
     # model_save_dir='/mfs/renxiangyuan/tweets/output/bart-5-fold-ak',  # 基于ak数据训
-    # model_save_dir='/mfs/renxiangyuan/tweets/output/test',  # 基于ak数据训
+    # model_save_dir='/mfs/renxiangyuan/tweets/output/test/roberta-base',  # 基于ak数据训
 
     batch_size=args.bs,
     seed=42,
@@ -75,6 +77,8 @@ config = Config(
     froze_n_layers=0,
     warmup_samples=0,
     frozen_warmup=False,
+    # warmup_scheduler="cosine",
+    fp16=False,
 )
 
 from utils import set_seed

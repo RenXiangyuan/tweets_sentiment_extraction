@@ -6,13 +6,16 @@
 @time: 2020-05-16 11:53
 """
 
+import os
 import tokenizers, transformers
 
 
 class Config(object):
     def __init__(self, train_dir, model_save_dir, batch_size=128, seed=42, lr=3e-5, model_type='roberta', alphe=0.3,
                  do_IO=False, smooth=0, multi_sent_loss_ratio=0.1, max_seq_length=192, num_hidden_layers=12,
-                 cat_n_layers=2, froze_n_layers=-1, warmup_samples=0, frozen_warmup=False):
+                 cat_n_layers=2, froze_n_layers=-1, warmup_samples=0, frozen_warmup=False, warmup_scheduler="linear",
+                 fp16=False):
+        self.fp16=fp16
         self.seed = seed
         self.lr = lr
         self.model_type = model_type
@@ -43,6 +46,8 @@ class Config(object):
         self.ACCUMULATION_STEPS = 1
         self.VALID_BATCH_SIZE = 16
         self.EPOCHS = 3
+        if self.EPOCHS != 3:
+            self.MODEL_SAVE_DIR += f"_{self.EPOCHS}ep"
         self.MAX_GRAD_NORM = 1.0
         self.n_worker_train = 16
         self.cat_n_layers = cat_n_layers
@@ -55,6 +60,7 @@ class Config(object):
         if self.warmup_iters > 0:
             self.MODEL_SAVE_DIR += f"_{warmup_samples}warm"
         self.frozen_warmup = frozen_warmup
+        self.warmup_scheduler = warmup_scheduler
         if frozen_warmup:
             assert froze_n_layers >= 0
             self.MODEL_SAVE_DIR += f"_fwarm"
@@ -98,6 +104,7 @@ class Config(object):
             self.model_config.num_hidden_layers = num_hidden_layers
 
     def print_info(self):
+        print(f"device:\t{os.environ['CUDA_VISIBLE_DEVICES']}")
         print(f"Seed\t: {self.seed}")
         print(f"Learning Rate\t: {self.lr}")
         print(f"Batch Size:\t {self.TRAIN_BATCH_SIZE}")

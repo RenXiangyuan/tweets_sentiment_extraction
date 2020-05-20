@@ -9,11 +9,12 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from transformers import AdamW
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from utils import AverageMeter, EarlyStopping, calculate_jaccard_score
 from data import TweetDataset
 from lovasz import lovasz_hinge
 
+from apex import amp
 
 class TweetModel(transformers.BertPreTrainedModel):
     def __init__(self, conf, config):
@@ -225,7 +226,11 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
 
         if config.ACCUMULATION_STEPS > 1:
             loss = loss / config.ACCUMULATION_STEPS
-        loss.backward()
+        if config.fp16:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
         if config.ACCUMULATION_STEPS == 1 or config.ACCUMULATION_STEPS > 1 and (bi + 1) % config.ACCUMULATION_STEPS == 0:
             # torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
@@ -370,18 +375,29 @@ def train(fold, config):
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0},
     ]
     optimizer = AdamW(optimizer_parameters, lr=config.lr, eps=config.eps) # , eps=1e-8
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=config.warmup_iters,
-        num_training_steps=num_train_steps,
-    )
+
+    if config.fp16:
+        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
+
+    if config.warmup_scheduler == "linear":
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=config.warmup_iters,
+            num_training_steps=num_train_steps,
+        )
+    elif config.warmup_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=config.warmup_iters,
+            num_training_steps=num_train_steps,
+        ); print("Using Cosine Scheduler")
+    else:
+        raise NotImplementedError()
 
     es = EarlyStopping(patience=2, mode="max")
     print(f"{'-'*10}\nTraining is Starting for fold={fold}")
 
     jaccard_list = []
-    if fold == 2:  # 针对第三个Fold需要加强训练 TODO: 4Epoch
-        config.EPOCHS += 1
     for epoch in range(config.EPOCHS):
         model_save_dir = os.path.join(config.MODEL_SAVE_DIR, f'model_{fold}_epoch_{epoch+1}.pth')
         if os.path.exists(model_save_dir):
@@ -398,8 +414,6 @@ def train(fold, config):
         if es.early_stop:
             print("Early stopping")
             break
-    if fold == 2:  # 针对第三个Fold需要加强训练
-        config.EPOCHS -= 1
     print("Jarccard Scores:", jaccard_list)
     return jaccard_list
 

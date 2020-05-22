@@ -45,7 +45,7 @@ args = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
 
-# args.lr = 6
+# args.lr = 5
 # args.bs = 128
 # os.environ['CUDA_VISIBLE_DEVICES'] = '9'
 # print("Warning, Use Hardcode Setting, not argparser Setting")
@@ -55,7 +55,7 @@ config = Config(
     # train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
 
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-    model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak',  # 基于ak数据训
+    model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/clean-data',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak-multi',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/mask_padding_loss',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
@@ -84,6 +84,7 @@ config = Config(
     fp16=False,
     # mask_pad_loss=True,
     # smooth=0,
+    clean_data=True
 )
 
 from utils import set_seed

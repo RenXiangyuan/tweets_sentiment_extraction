@@ -15,6 +15,9 @@ from utils import AverageMeter, EarlyStopping, calculate_jaccard_score
 from data import TweetDataset
 from lovasz import lovasz_hinge
 
+from utils import clean_item
+from utils import filter_set
+
 from apex import amp
 
 class TweetModel(transformers.BertPreTrainedModel):
@@ -365,10 +368,29 @@ def train(fold, config):
     df_train = dfx[dfx.kfold != fold].reset_index(drop=True)
     df_valid = dfx[dfx.kfold == fold].reset_index(drop=True)
 
+    np_train = np.array(df_train)
+    if config.clean_data:
+        # 若要不训练neutral
+        # np_train_idx = [i for i, item_i in enumerate(np_train) if item_i[3] != 'neutral']
+        # np_train = np_train[np_train_idx]
+
+        # 过滤outlier
+        np_train_idx = [i for i, item_i in enumerate(np_train) if item_i[0] not in filter_set]
+        np_train = np_train[np_train_idx]
+
+        # 修正input label
+        for i, item in enumerate(np_train):
+            # if item[3] == 'neutral':
+            #     continue
+            np_train[i] = clean_item(item)
+
     train_dataset = TweetDataset(
-        tweet=df_train.text.values,
-        sentiment=df_train.sentiment.values,
-        selected_text=df_train.selected_text.values,
+        # tweet=df_train.text.values,
+        # sentiment=df_train.sentiment.values,
+        # selected_text=df_train.selected_text.values,
+        tweet=np_train[:, 1],
+        sentiment=np_train[:,3],
+        selected_text=np_train[:,2],
         config=config,
         multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
     )

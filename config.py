@@ -15,7 +15,7 @@ class Config(object):
     def __init__(self, train_dir, model_save_dir, batch_size=128, seed=42, lr=3e-5, model_type='roberta', alphe=0.3,
                  do_IO=False, smooth=0, multi_sent_loss_ratio=0.1, max_seq_length=192, num_hidden_layers=12,
                  cat_n_layers=2, froze_n_layers=-1, warmup_samples=0, frozen_warmup=False, warmup_scheduler="linear",
-                 fp16=False, epochs=3, loss_type='lovasz', mask_pad_loss=False):
+                 fp16=False, epochs=3, loss_type='lovasz', mask_pad_loss=False, clean_data=False):
 
         self.seed = seed
         self.lr = lr
@@ -78,6 +78,10 @@ class Config(object):
         self.fp16 = fp16
         if fp16:
             self.MODEL_SAVE_DIR += f"_fp16"
+
+        self.clean_data = clean_data
+        if clean_data:
+            self.MODEL_SAVE_DIR += f"_clean"
 
         if self.model_type == 'roberta':
             if 'roberta-squad' in model_save_dir:

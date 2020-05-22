@@ -11,7 +11,83 @@ import numpy as np
 import torch
 import sentencepiece as spm
 import sentencepiece_pb2
+import re
 
+filter_set ={
+    '142f9472fc', 'eaf2942ee8', '66095230ee', '67ec0f5817', '833e9fb8d7', 'e2abcae593',
+    '792063a20e', '780c673bca', '8a5155db71', 'bc84f21e3b', 'c6149b7abf', 'fdb77c3752',
+}
+
+new_input_dict = {
+    "2cb67e64b4": "Aam   these dogs are going to die if somebody doesn`t save them!",
+}
+new_label_dict = {
+    "ef6552e483": "stinks",
+    "fee6cd911d": "Wave looks interesting.",
+    "bb30655041": "I just noticed that too",
+    "170874d02b": "Desktop wallpaper like the inside of a monitor",
+    "c5de5361d2": "Does anyone out there want to be REALLY awesome and buy me one of these for my birthday? ."
+}
+
+re_url = re.compile(r'https?://\S+')
+def delete_url(text, select_text, sentiment):
+    findall = re.findall(re_url, text)
+    if len(findall) == 0:
+        return text, select_text
+#     for url_str in findall:
+#         i_start = text.index(url_str)
+#         i_end = i_start + len(url_str) - 1
+#         if url_str[-1] in {'.'}:
+#             i_end -= 1
+#         text = text[:i_start] + text[i_end+1:]
+    text = re_url.sub(r'.',text)
+    select_text = re_url.sub(r'.',select_text)
+    return text, select_text
+re_html = re.compile(r'<.*?>')
+def delete_html(text, select_text, sentiment, debug=False):
+    text = re_html.sub(r'', text)
+    select_text = re_html.sub(r'',select_text)
+    return text, select_text
+re_bracket = re.compile(r'\[.*?\]')
+def delete_bracket(text, select_text, sentiment, debug=False):
+    text = re_bracket.sub(r'', text)
+    select_text = re_bracket.sub(r'',select_text)
+    return text, select_text
+re_space = re.compile(r'ï¿½(?=[vtms]|ll|re)')
+def delete_space(text, select_text, sentiment, debug=False):
+    if 'ï¿½' not in text:
+        return text, select_text
+    text = re_space.sub(r'`', text)
+    if 'ï¿½' in text:
+        text = text.replace('ï¿½', ' ')
+    select_text = re_space.sub(r'`',select_text)
+    if 'ï¿½' in select_text:
+        select_text = select_text.replace('ï¿½', ' ')
+    if select_text[-1] == "ï":
+        select_text = select_text[:-1]
+    return text, select_text
+
+def clean_item(item):
+    id_, text, select_text, sentiment = item[0], item[1], item[2], item[3]
+
+    if id_ in new_input_dict:
+        item[1] = new_input_dict[id_]
+    if id_ in new_label_dict:
+        item[2] = new_label_dict[id_]
+
+    item[1], item[2] = delete_url(item[1], item[2], sentiment)
+    item[1], item[2] = delete_html(item[1], item[2], sentiment)
+    item[1], item[2] = delete_bracket(item[1], item[2], sentiment)
+    item[1], item[2] = delete_space(item[1], item[2], sentiment)
+
+    if item[2] not in item[1]:
+        print(id_, sentiment)
+        print(text)
+        print(select_text)
+        print(item[1])
+        print(item[2], '\n')
+
+    return item
 
 def calculate_jaccard_score(
         original_tweet,

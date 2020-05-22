@@ -14,21 +14,18 @@ class Config(object):
     def __init__(self, train_dir, model_save_dir, batch_size=128, seed=42, lr=3e-5, model_type='roberta', alphe=0.3,
                  do_IO=False, smooth=0, multi_sent_loss_ratio=0.1, max_seq_length=192, num_hidden_layers=12,
                  cat_n_layers=2, froze_n_layers=-1, warmup_samples=0, frozen_warmup=False, warmup_scheduler="linear",
-                 fp16=False):
-        self.fp16=fp16
+                 fp16=False, epochs=3, loss_type='lovasz', mask_pad_loss=False):
+
         self.seed = seed
         self.lr = lr
         self.model_type = model_type
         self.TRAINING_FILE = train_dir  # '/data/nfs/fangzhiqiang/nlp_data/tweet_extraction/folds/train_folds.csv'# ak数据
-        self.alpha = alphe
-        self.do_IO = do_IO
+
         self.TRAIN_BATCH_SIZE = batch_size  # 16
         self.MODEL_SAVE_DIR = model_save_dir + f'/{round(self.lr * 1e5)}e-05lr_{batch_size}bs_{self.seed}sd'
         self.smooth = smooth
         if smooth > 0:
-            self.MODEL_SAVE_DIR += f"_{smooth}ls"
-        if self.do_IO:
-            self.MODEL_SAVE_DIR += f"_{alphe}alpha"
+            self.MODEL_SAVE_DIR += f"_{smooth}smooth"
         self.multi_sent_loss_ratio = multi_sent_loss_ratio
         if multi_sent_loss_ratio > 0:
             self.MODEL_SAVE_DIR += f"_{multi_sent_loss_ratio}beta"
@@ -40,12 +37,19 @@ class Config(object):
             self.MODEL_SAVE_DIR += f"_{max_seq_length}len"
         if num_hidden_layers != 12:
             self.MODEL_SAVE_DIR += f"_{num_hidden_layers}layer"
-        # self.loss_type = 'bce'
-        self.loss_type = 'lovasz'
+
+        self.do_IO = do_IO
+        self.alpha = alphe
+        self.loss_type = loss_type
+        if self.do_IO:
+            assert alphe > 0
+            self.MODEL_SAVE_DIR += f"_{alphe}alpha"
+            if loss_type != 'lovasz':  # 'bce'
+                self.MODEL_SAVE_DIR += f"_{loss_type}"
         self.eps = 1e-6
         self.ACCUMULATION_STEPS = 1
-        self.VALID_BATCH_SIZE = 16
-        self.EPOCHS = 3
+        self.VALID_BATCH_SIZE = 32
+        self.EPOCHS = epochs
         if self.EPOCHS != 3:
             self.MODEL_SAVE_DIR += f"_{self.EPOCHS}ep"
         self.MAX_GRAD_NORM = 1.0
@@ -60,10 +64,19 @@ class Config(object):
         if self.warmup_iters > 0:
             self.MODEL_SAVE_DIR += f"_{warmup_samples}warm"
         self.frozen_warmup = frozen_warmup
-        self.warmup_scheduler = warmup_scheduler
         if frozen_warmup:
-            assert froze_n_layers >= 0
+            # assert froze_n_layers >= 0
             self.MODEL_SAVE_DIR += f"_fwarm"
+
+        self.warmup_scheduler = warmup_scheduler
+        if warmup_scheduler != 'linear':
+            self.MODEL_SAVE_DIR += '_cos'
+
+        self.mask_pad_loss = mask_pad_loss
+
+        self.fp16 = fp16
+        if fp16:
+            self.MODEL_SAVE_DIR += f"_fp16"
 
         if self.model_type == 'roberta':
             if 'roberta-squad' in model_save_dir:

@@ -45,33 +45,36 @@ args = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
 
-# args.lr = 5
-# args.bs = 32
-# os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+# args.lr = 6
+# args.bs = 128
+# os.environ['CUDA_VISIBLE_DEVICES'] = '9'
 # print("Warning, Use Hardcode Setting, not argparser Setting")
 
 config = Config(
-    # train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
-    train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
+    train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
+    # train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
 
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-5-fold-ak',  # 基于ak数据训
-    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/fp16',  # 基于ak数据训
-    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/cosine-scheduler',  # 基于ak数据训
-    model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
+    model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak-multi',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-squad-5-fold-ak/mask_padding_loss',  # 基于ak数据训
+    # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-5-fold-ak/cosine-scheduler',  # 基于ak数据训
     # model_save_dir='/mfs/renxiangyuan/tweets/output/roberta-base-multisent-5-fold-ak',  # 基于ak数据训
     # model_save_dir = '/mfs/renxiangyuan/tweets/output/roberta-base-multi-lovasz-smooth-5-fold-ak',  # 基于ak数据训
     # model_save_dir='/mfs/renxiangyuan/tweets/output/bart-5-fold-ak',  # 基于ak数据训
     # model_save_dir='/mfs/renxiangyuan/tweets/output/test/roberta-base',  # 基于ak数据训
+    # model_save_dir='/mfs/renxiangyuan/tweets/output/test/roberta-squad',  # 基于ak数据训
 
     batch_size=args.bs,
+    # epochs=4,  # 默认epochs=3
     seed=42,
     lr=args.lr * 1e-5,
     # model_type='bart',
     model_type='roberta',
-    do_IO=False, alphe=0.5,
+    do_IO=False, alphe=0.5,# loss_type='bce',
     multi_sent_loss_ratio=0,
-    max_seq_length=192,
+    max_seq_length=128,
     num_hidden_layers=13,
     cat_n_layers=2,
     froze_n_layers=0,
@@ -79,6 +82,8 @@ config = Config(
     frozen_warmup=False,
     # warmup_scheduler="cosine",
     fp16=False,
+    # mask_pad_loss=True,
+    # smooth=0,
 )
 
 from utils import set_seed
@@ -96,10 +101,16 @@ if "train" in mode:
     os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
     jaccard_scores = []
     for i in range(5):
-        jaccard_scores.append(train(fold=i, config=config))
+        scores_i = train(fold=i, config=config)
+        jaccard_scores.append(scores_i)
+        if i == 0 and max(scores_i) < 0.705:
+            print("Fold 0 Too Weak, Early Stop")
+            break
     for i, res_i in enumerate(jaccard_scores):
         print(i, res_i)
     print("mean", np.mean([max(scores) for scores in jaccard_scores]))
+    for i in range(config.EPOCHS):
+        print(f"\tEpoch{i}: ", np.mean(scores[i] for scores in jaccard_scores))
     config.print_info()
 
 # 测试
@@ -119,8 +130,8 @@ if "evaluate" in mode:
     device = torch.device("cuda")
     model = TweetModel(conf=config.model_config, config=config)
     model.to(device)
-    res = np.zeros((5, 2))
-    for fold in range(5):
+    res = [[] for _ in range(5)]
+    for fold in range(0):
         dfx = pd.read_csv(config.TRAINING_FILE)
         df_valid = dfx[dfx.kfold == fold].reset_index(drop=True)
 
@@ -134,26 +145,23 @@ if "evaluate" in mode:
         valid_data_loader = torch.utils.data.DataLoader(
             valid_dataset,
             batch_size=config.VALID_BATCH_SIZE,
-            num_workers=2
+            num_workers=8
         )
 
-        state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_2.pth")
-        print(state_dict_dir)
-        model.load_state_dict(torch.load(state_dict_dir))
-        model.eval()
+        for ep in range(1, config.EPOCHS):
 
-        jaccards = eval_fn(valid_data_loader, model, device, config)
-        print(jaccards)
-        res[fold][0] = jaccards
+            state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_{ep}.pth")
+            print(state_dict_dir)
+            model.load_state_dict(torch.load(state_dict_dir))
+            model.eval()
 
-        state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_3.pth")
-        print(state_dict_dir)
-        model.load_state_dict(torch.load(state_dict_dir))
-        model.eval()
+            jaccards = eval_fn(valid_data_loader, model, device, config)
+            print(jaccards)
+            res[fold].append(jaccards)
 
-        jaccards = eval_fn(valid_data_loader, model, device, config)
-        print(jaccards)
-        res[fold][1] = jaccards
     for i, res_i in enumerate(res):
-        print(i, res_i[0], res_i[1])
+        print(i, res_i)
     print("mean", np.mean([max(scores) for scores in res]))
+
+    for i in range(config.EPOCHS):
+        print(f"\tEpoch{i+1}: ", np.mean(scores[i] for scores in res))

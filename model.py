@@ -4,6 +4,7 @@ import pandas as pd
 import os
 import torch
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import transformers
 import torch.nn as nn
 from tqdm import tqdm
@@ -128,9 +129,29 @@ class TweetModel(transformers.BertPreTrainedModel):
 
 def loss_fn(start_logits, end_logits, start_positions, end_positions,
             cls_logit=None, cls_label=None, token_logits=None, token_labels=None, mask=None, config=None):
-    loss_fct = nn.CrossEntropyLoss()
-    start_loss = loss_fct(start_logits, start_positions)
-    end_loss = loss_fct(end_logits, end_positions)
+
+    if config.mask_pad_loss:
+        start_logits -= (mask == 0) * 1e4
+        end_logits -= (mask == 0) * 1e4
+
+    if config.smooth > 0:
+        one_hot_start_label = torch.zeros_like(start_logits).scatter(1, start_positions.view(-1, 1), 1)
+        one_hot_end_label = torch.zeros_like(start_logits).scatter(1, end_positions.view(-1, 1), 1)
+        one_hot_start_label = one_hot_start_label * (1 - config.smooth) + \
+                              (1 - one_hot_start_label) * config.smooth / (config.MAX_LEN - 1)
+        one_hot_end_label = one_hot_end_label * (1 - config.smooth) + \
+                              (1 - one_hot_end_label) * config.smooth / (config.MAX_LEN - 1)
+        if config.mask_pad_loss:
+            one_hot_start_label[mask == 0] = 0
+            one_hot_end_label[mask == 0] = 0
+
+        start_loss = -torch.sum(F.log_softmax(start_logits, dim=1) * one_hot_start_label)/start_logits.size(0)
+        end_loss = -torch.sum(F.log_softmax(end_logits, dim=1) * one_hot_end_label)/start_logits.size(0)
+    else:
+        loss_fct = nn.CrossEntropyLoss()
+        start_loss = loss_fct(start_logits, start_positions)
+        end_loss = loss_fct(end_logits, end_positions)
+
     total_loss = (start_loss + end_loss)
 
     if config.multi_sent_loss_ratio > 0:
@@ -213,6 +234,7 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
             token_type_ids=token_type_ids
         )
         start_logits, end_logits = model_out[0], model_out[1]
+
         if config.multi_sent_loss_ratio > 0:
             cls_labels = d["cls_labels"].to(device, dtype=torch.long)
             cls_logits = model_out[2]
@@ -222,7 +244,7 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
         else:
             token_logits = model_out[2]
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end,
-                           token_logits, labels, mask, config=config)
+                           token_logits=token_logits, token_labels=labels, mask=mask, config=config)
 
         if config.ACCUMULATION_STEPS > 1:
             loss = loss / config.ACCUMULATION_STEPS
@@ -290,6 +312,7 @@ def eval_fn(data_loader, model, device, config):
                 token_type_ids=token_type_ids
             )
             start_logits, end_logits = model_out[0], model_out[1]
+
             if config.multi_sent_loss_ratio > 0:
                 cls_logits = model_out[2]
                 cls_labels = d["cls_labels"].to(device, dtype=torch.long)
@@ -299,7 +322,7 @@ def eval_fn(data_loader, model, device, config):
             else:
                 token_logits = model_out[2]
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end,
-                           token_logits, labels, mask, config=config)
+                           token_logits=token_logits, token_labels=labels, mask=mask, config=config)
             outputs_start = torch.softmax(start_logits, dim=1).cpu().detach().numpy()
             outputs_end = torch.softmax(end_logits, dim=1).cpu().detach().numpy()
             jaccard_scores = []

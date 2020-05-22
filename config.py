@@ -5,9 +5,10 @@
 @file: config.py
 @time: 2020-05-16 11:53
 """
-
 import os
 import tokenizers, transformers
+
+from utils import SentencePieceTokenizer
 
 
 class Config(object):
@@ -115,6 +116,11 @@ class Config(object):
             self.model_config.output_hidden_states = True
             # self.model_config.max_length = self.MAX_LEN
             self.model_config.num_hidden_layers = num_hidden_layers
+        elif self.model_type == 'albert':
+            self.ALBERT_PATH = "/mfs/fangzhiqiang/nlp_model/albert-base-v2"
+            self.TOKENIZER = SentencePieceTokenizer(self.ALBERT_PATH)
+            self.model_config = transformers.AlbertConfig.from_pretrained(self.ALBERT_PATH)
+            self.model_config.output_hidden_states = True
 
     def print_info(self):
         print(f"device:\t{os.environ['CUDA_VISIBLE_DEVICES']}")

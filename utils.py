@@ -5,9 +5,12 @@
 @file: utils.py
 @time: 2020-04-16 11:54
 """
+import os
 import random
 import numpy as np
 import torch
+import sentencepiece as spm
+import sentencepiece_pb2
 
 
 def calculate_jaccard_score(
@@ -166,3 +169,19 @@ hardcode_dict = {
     '18180bb2ec': 'Its so pretty',
     '9df7f02404': 'FunForBunny',
 }
+
+
+class SentencePieceTokenizer:
+    def __init__(self, model_path):
+        self.sp = spm.SentencePieceProcessor()
+        self.sp.load(os.path.join(model_path, "spiece.model"))
+
+    def encode(self, sentence):
+        spt = sentencepiece_pb2.SentencePieceText()
+        spt.ParseFromString(self.sp.encode_as_serialized_proto(sentence))
+        offsets = []
+        tokens = []
+        for piece in spt.pieces:
+            tokens.append(piece.id)
+            offsets.append((piece.begin, piece.end))
+        return tokens, offsets

@@ -23,6 +23,8 @@ class TweetDataset:
             self.process_data = self.process_data_electra
         elif config.model_type == 'bart':
             self.process_data = self.process_data_bart
+        elif config.model_type == 'albert':
+            self.process_data = self.process_data_albert
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
         self.smooth = config.smooth
@@ -253,6 +255,71 @@ class TweetDataset:
         return {
             'ids': input_ids,
             'mask': mask,
+            'token_type_ids': token_type_ids,
+            'targets_start': targets_start,
+            'targets_end': targets_end,
+            'orig_tweet': tweet,
+            'orig_selected': selected_text,
+            'sentiment': sentiment,
+            'offsets': tweet_offsets
+        }
+
+    @staticmethod
+    def process_data_albert(tweet, selected_text, sentiment, tokenizer, max_len):
+        len_st = len(selected_text)
+        idx0 = None
+        idx1 = None
+
+        for ind in (i for i, e in enumerate(tweet) if e == selected_text[0]):
+            if tweet[ind: ind + len_st] == selected_text:
+                idx0 = ind
+                idx1 = ind + len_st - 1
+                break
+
+        char_targets = [0] * len(tweet)
+        if idx0 is not None and idx1 is not None:
+            for ct in range(idx0, idx1 + 1):
+                char_targets[ct] = 1
+
+        input_ids_orig, tweet_offsets = tokenizer.encode(tweet)
+
+        target_idx = []
+        for j, (offset1, offset2) in enumerate(tweet_offsets):
+            if sum(char_targets[offset1: offset2]) > 0:
+                target_idx.append(j)
+
+        targets_start = target_idx[0]
+        targets_end = target_idx[-1]
+
+        sentiment_id = {
+            'positive': 2221,
+            'negative': 3682,
+            'neutral': 8387
+        }
+
+        input_ids = [2] + [sentiment_id[sentiment]] + [3] + input_ids_orig + [3]
+        token_type_ids = [0] * 2 + [1] * (len(input_ids_orig) + 2)
+        assert len(input_ids) == len(token_type_ids)
+        mask = [1] * len(token_type_ids)
+        tweet_offsets = [(0, 0)] * 3 + tweet_offsets + [(0, 0)]
+        targets_start += 3
+        targets_end += 3
+
+        padding_length = max_len - len(input_ids)
+        if padding_length > 0:
+            input_ids = input_ids + ([0] * padding_length)
+            mask = mask + ([0] * padding_length)
+            token_type_ids = token_type_ids + ([0] * padding_length)
+            tweet_offsets = tweet_offsets + ([(0, 0)] * padding_length)
+
+        labels = [0] * len(input_ids)
+        for idx in range(targets_start, targets_end + 1):
+            labels[idx] = 1
+
+        return {
+            'ids': input_ids,
+            'mask': mask,
+            'labels': labels,
             'token_type_ids': token_type_ids,
             'targets_start': targets_start,
             'targets_end': targets_end,

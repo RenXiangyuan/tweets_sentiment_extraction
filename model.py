@@ -27,9 +27,10 @@ class TweetModel(transformers.BertPreTrainedModel):
         #     self.electra = transformers.ElectraModel.from_pretrained(config.ELECTRA_PATH, config=conf)
         # elif config.model_type == 'bart':
         #     self.bart = transformers.BartModel.from_pretrained(config.BART_PATH, config=conf)
+        elif config.model_type == 'albert':
+            self.albert = transformers.AlbertModel.from_pretrained(config.ALBERT_PATH, config=conf)
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
-
 
         if config.frozen_warmup and config.warmup_iters > 0:
             self.frozen(12)
@@ -60,23 +61,23 @@ class TweetModel(transformers.BertPreTrainedModel):
             torch.nn.init.normal_(self.token_classifier.weight, std=0.02)
 
     def frozen(self, froze_n_layers):
-        for param in self.roberta.embeddings.parameters():
+        for param in self.__getattr__(self.config.model_type).embeddings.parameters():
             param.requires_grad = False
-        print("Robeta Embedding Frozen")
+        print(f"{self.config.model_type} Embedding Frozen")
         for i in range(froze_n_layers):
-            for param in self.roberta.encoder.layer[i].parameters():
+            for param in self.__getattr__(self.config.model_type).encoder.layer[i].parameters():
                 param.requires_grad = False
-            print(f"Roberta Encoder Layer {i} Frozen")
+            print(f"{self.config.model_type} Encoder Layer {i} Frozen")
 
     def unfrozen(self, frozen_n_layers):
-        for param in self.roberta.encoder.layer[11].parameters():
+        for param in self.__getattr__(self.config.model_type).encoder.layer[11].parameters():
             if param.requires_grad:
                 return
             break
         for i in range(frozen_n_layers, 12):
-            for param in self.roberta.encoder.layer[i].parameters():
+            for param in self.__getattr__(self.config.model_type).encoder.layer[i].parameters():
                 param.requires_grad = True
-            print(f"Roberta Encoder Layer {i} Unfrozen")
+            print(f"{self.config.model_type} Encoder Layer {i} Unfrozen")
 
     def forward(self, ids, mask, token_type_ids):
         if self.config.model_type == 'roberta':
@@ -97,6 +98,12 @@ class TweetModel(transformers.BertPreTrainedModel):
                 attention_mask=mask,
                 decoder_attention_mask=mask,
                 # token_type_ids=token_type_ids
+            )
+        elif self.config.model_type == 'albert':
+            sequence_output, _, out = self.albert(
+                ids,
+                attention_mask=mask,
+                token_type_ids=token_type_ids
             )
         # out = self.backbone(ids, attention_mask=mask, token_type_ids=token_type_ids)[-1]
 

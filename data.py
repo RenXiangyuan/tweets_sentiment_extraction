@@ -17,13 +17,13 @@ class TweetDataset:
         self.selected_text = selected_text
         self.tokenizer = config.TOKENIZER
         self.max_len = config.MAX_LEN
-        if config.model_type == 'roberta':
+        if 'roberta' in config.model_type:
             self.process_data = self.process_data_roberta
         elif config.model_type == 'electra':
             self.process_data = self.process_data_electra
         elif config.model_type == 'bart':
             self.process_data = self.process_data_bart
-        elif config.model_type == 'albert':
+        elif 'albert' in config.model_type:
             self.process_data = self.process_data_albert
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
@@ -298,7 +298,7 @@ class TweetDataset:
         }
 
         input_ids = [2] + [sentiment_id[sentiment]] + [3] + input_ids_orig + [3]
-        token_type_ids = [0] * 2 + [1] * (len(input_ids_orig) + 2)
+        token_type_ids = [0] * 3 + [1] * (len(input_ids_orig) + 1)
         assert len(input_ids) == len(token_type_ids)
         mask = [1] * len(token_type_ids)
         tweet_offsets = [(0, 0)] * 3 + tweet_offsets + [(0, 0)]

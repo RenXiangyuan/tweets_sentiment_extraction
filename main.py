@@ -26,7 +26,8 @@ def main(args, mode):
         train_dir='/mfs/renxiangyuan/tweets/data/train_folds.csv',  # 原始数据
         # train_dir='/mfs/renxiangyuan/tweets/data/train_folds_extra.csv',  # 加入更多sentimen分类数据
 
-        model_save_dir=f'/mfs/renxiangyuan/tweets/output/{args.model_type}-5-fold-ak',
+        # model_save_dir=f'/mfs/renxiangyuan/tweets/output/{args.model_type}-5-fold-ak',
+        model_save_dir=f'/mfs/renxiangyuan/tweets/output/shuffle/{args.model_type}-5-fold-ak',
 
         model_type=args.model_type,
         batch_size=args.bs,
@@ -38,17 +39,20 @@ def main(args, mode):
         froze_n_layers=args.froze_n_layers,
 
         # conv_head=True,
+        eps=args.eps,
+        shuffle_seed=args.shuffle_seed,
 
-        # do_IO=False, alphe=0.5,  # loss_type='bce',
-        # multi_sent_loss_ratio=0,
-        # warmup_samples=0,
+        epochs=args.epochs,  # 默认epochs=3
+        warmup_samples=args.warmup_samples,
         # frozen_warmup=False,
-        # warmup_scheduler="cosine",
+        warmup_scheduler=args.scheduler,
+        mask_pad_loss=args.mask_pad_loss,
+        smooth=args.smooth,
         # fp16=False,
-        # mask_pad_loss=False,
-        # smooth=0,
+
+        io_loss_ratio=args.io_loss_ratio, io_loss_type=args.io_loss_type,
+        # multi_sent_loss_ratio=0,
         # clean_data=True,  # 模型clean_data=False
-        # epochs=4,  # 默认epochs=3
     )
 
     config.print_info()
@@ -59,7 +63,8 @@ def main(args, mode):
     if "train" in mode:
         os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
         jaccard_scores = []
-        for i in range(5):
+        # for i in range(1):
+        for i in try_folds:
             scores_i = train(fold=i, config=config)
             jaccard_scores.append(scores_i)
             if i == 0 and max(scores_i) < 0.705:
@@ -68,8 +73,8 @@ def main(args, mode):
         for i, res_i in enumerate(jaccard_scores):
             print(i, res_i)
         print("mean", np.mean([max(scores) for scores in jaccard_scores]))
-        print(f"\tEpoch{2}: ", np.mean(scores[1] for scores in jaccard_scores))
-        print(f"\tEpoch{3}: ", np.mean(scores[2] for scores in jaccard_scores))
+        for i in range(1, config.EPOCHS):
+            print(f"\tEpoch{i+1}: ", np.mean([scores[i] for scores in jaccard_scores]))
         config.print_info()
 
     # 测试
@@ -90,7 +95,7 @@ def main(args, mode):
         model = TweetModel(conf=config.model_config, config=config)
         model.to(device)
         res = [[] for _ in range(5)]
-        for fold in range(0):
+        for fold in range(5):
             dfx = pd.read_csv(config.TRAINING_FILE)
             df_valid = dfx[dfx.kfold == fold].reset_index(drop=True)
 
@@ -108,7 +113,7 @@ def main(args, mode):
             )
 
             for ep in range(1, config.EPOCHS):
-                state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_{ep}.pth")
+                state_dict_dir = os.path.join(config.MODEL_SAVE_DIR, f"model_{fold}_epoch_{ep+1}.pth")
                 print(state_dict_dir)
                 model.load_state_dict(torch.load(state_dict_dir))
                 model.eval()
@@ -121,8 +126,8 @@ def main(args, mode):
             print(i, res_i)
         print("mean", np.mean([max(scores) for scores in res]))
 
-        for i in range(config.EPOCHS):
-            print(f"\tEpoch{i + 1}: ", np.mean(scores[i] for scores in res))
+        for i in range(2):
+            print(f"\tEpoch{i + 1}: ", np.mean([scores[i] for scores in res]))
 
 
 if __name__ == "__main__":
@@ -200,17 +205,66 @@ if __name__ == "__main__":
         help="Number of Hidden Layers To Init (currently only for roberta)",
     )
 
+    parser.add_argument(
+        "--epochs",
+        default=3,
+        type=int,
+        required=False,
+        help="Number of Epochs during Training",
+    )
+
+    parser.add_argument(
+        "--smooth",
+        default=0,
+        type=float,
+        required=False,
+        help="Label Smoothing Alpha",
+    )
+
+    parser.add_argument(
+        "--io_loss_ratio",
+        default=0,
+        type=float,
+        required=False,
+        help="IO Loss Alpha",
+    )
+
+    parser.add_argument(
+        "--io_loss_type",
+        default="lovasz",
+        type=str,
+        required=False,
+        help="IO Loss Function",
+    )
+
+    parser.add_argument(
+        "--eps",
+        default=1e-6,
+        type=float,
+        required=False,
+        help="AdamW Epsilon",
+    )
+
     args = parser.parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
+    args.warmup_samples = 0
+    # args.frozen_warmup=False
+    args.scheduler = 'linear'
+    args.mask_pad_loss = False
 
+
+
+
+    # args.model_type = "roberta-squad"
     # args.lr = 4
     # args.bs = 32
-    # args.num_hidden_layers = 12
-    # args.froze_n_layers = -1
-    # args.cat_n_layers = 1
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    # print("Warning, Use Hardcode Setting, not argparser Setting")
+    # args.num_hidden_layers = 13
+    # args.froze_n_layers = 0
+    # args.cat_n_layers = 2
+    # args.epochs = 3
+    # args.smooth = 0
+    args.cuda_device = '6'
+    print("Warning, Use Hardcode Setting, not argparser Setting")
 
     mode = [
         "train",
@@ -218,4 +272,24 @@ if __name__ == "__main__":
         # "evaluate",
     ]
 
-    main(args, mode)
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
+    # main(args, mode)
+
+    import copy
+
+    # args1 = copy.deepcopy(args)
+    # args1.model_type = "roberta-base"
+    # # args1.smooth = 0.2
+    # # args1.mask_pad_loss = True
+    # # args1.io_loss_ratio = 0.5
+    # args1.epochs=4
+    # main(args1, mode)
+
+    # try_folds = [0]
+    # print(try_folds)
+    # for shuffle_seed in [-1]:
+    #     args1 = copy.deepcopy(args)
+    #     args1.model_type = "roberta-squad"
+    #     args1.shuffle_seed = shuffle_seed
+    #     main(args1, mode)
+    #     print(f"fold{try_folds[0]+1}, shuffle_seed", shuffle_seed)

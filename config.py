@@ -17,14 +17,14 @@ class Config(object):
                  batch_size, seed, lr, model_type, max_seq_length, num_hidden_layers, cat_n_layers, froze_n_layers,
                  epochs=3,
 
-                 do_IO=False, alphe=0.5, loss_type='lovasz',
+                 io_loss_ratio=0, io_loss_type='lovasz',
                  smooth=0, mask_pad_loss=False,
                  multi_sent_loss_ratio=0,
                  warmup_samples=0, frozen_warmup=False,
                  warmup_scheduler="linear",
                  fp16=False,
                  clean_data=False,
-                 conv_head=False):
+                 conv_head=False, eps=1e-6, shuffle_seed=-1):
         self.TRAINING_FILE = train_dir
         self.MODEL_SAVE_DIR = model_save_dir + f'/{round(lr * 1e5)}e-05lr_{batch_size}bs_{seed}sd'+\
                               f'_{max_seq_length}len_{num_hidden_layers}layer_{cat_n_layers}cat_{froze_n_layers}froze'
@@ -53,26 +53,21 @@ class Config(object):
                                  'hate': 6, 'love': 7, 'neutral': 8, 'relief': 9, 'sadness': 10, 'surprise': 11,
                                  'worry': 12}
 
-        self.do_IO = do_IO
-        self.alpha = alphe
-        self.loss_type = loss_type
-        if self.do_IO:
-            assert alphe > 0
-            self.MODEL_SAVE_DIR += f"_{alphe}alpha"
-            if loss_type != 'lovasz':  # 'bce'
-                self.MODEL_SAVE_DIR += f"_{loss_type}"
-
+        self.io_loss_ratio = io_loss_ratio
+        self.io_loss_type = io_loss_type
+        if self.io_loss_ratio > 0:
+            self.MODEL_SAVE_DIR += f"_{io_loss_ratio}{io_loss_type}"
 
         self.warmup_iters = warmup_samples//batch_size
+        self.frozen_warmup = frozen_warmup
         if self.warmup_iters > 0:
             self.MODEL_SAVE_DIR += f"_{warmup_samples}warm"
-        self.frozen_warmup = frozen_warmup
         if frozen_warmup:
-            # assert froze_n_layers >= 0
+            assert self.warmup_iters >= 0
             self.MODEL_SAVE_DIR += f"_fwarm"
 
         self.warmup_scheduler = warmup_scheduler
-        if warmup_scheduler != 'linear':
+        if warmup_scheduler == 'cosine':
             self.MODEL_SAVE_DIR += '_cos'
 
         self.mask_pad_loss = mask_pad_loss
@@ -87,7 +82,13 @@ class Config(object):
         if clean_data:
             assert "clean-data" in self.MODEL_SAVE_DIR
 
-        self.eps = 1e-6
+        self.eps = eps
+        if eps != 1e-6:
+            self.MODEL_SAVE_DIR += f'_{eps}adameps'
+        self.shuffle_seed = shuffle_seed
+        if shuffle_seed != -1:
+            self.MODEL_SAVE_DIR += f'_{shuffle_seed}shufflesd'
+
         self.ACCUMULATION_STEPS = 1
         self.MAX_GRAD_NORM = 1.0
         self.n_worker_train = 16

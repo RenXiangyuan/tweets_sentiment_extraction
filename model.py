@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import os
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 import torch.nn.functional as F
 import transformers
 import torch.nn as nn
@@ -24,14 +24,14 @@ class TweetModel(transformers.BertPreTrainedModel):
     def __init__(self, conf, config):
         super(TweetModel, self).__init__(conf)
         self.config = config
-        if config.model_type == 'roberta':
-            self.roberta = transformers.RobertaModel.from_pretrained(config.ROBERTA_PATH, config=conf)
+        if 'roberta' in config.model_type:
+            self.model = transformers.RobertaModel.from_pretrained(config.ROBERTA_PATH, config=conf)
         # elif config.model_type == 'electra':
         #     self.electra = transformers.ElectraModel.from_pretrained(config.ELECTRA_PATH, config=conf)
         # elif config.model_type == 'bart':
         #     self.bart = transformers.BartModel.from_pretrained(config.BART_PATH, config=conf)
-        elif config.model_type == 'albert':
-            self.albert = transformers.AlbertModel.from_pretrained(config.ALBERT_PATH, config=conf)
+        elif 'albert' in config.model_type:
+            self.model = transformers.AlbertModel.from_pretrained(config.ALBERT_PATH, config=conf)
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
 
@@ -41,50 +41,53 @@ class TweetModel(transformers.BertPreTrainedModel):
             self.frozen(config.froze_n_layers)
 
         self.drop_out = nn.Dropout(0.1)
-        self.l0 = nn.Linear(conf.hidden_size * 2, 2)
-        if config.cat_n_layers == 3:
-            self.l0 = nn.Linear(conf.hidden_size * 3, 2)
 
-        torch.nn.init.normal_(self.l0.weight, std=0.02)
+        if config.conv_head:
+            self.head = nn.Conv1d(conf.hidden_size * config.cat_n_layers, 2, kernel_size=5,
+                                  stride=1, padding=2, bias=False)
+            torch.nn.init.kaiming_normal_(self.head.weight, mode="fan_in", nonlinearity="sigmoid")
+        else:
+            self.head = nn.Linear(conf.hidden_size * config.cat_n_layers, 2)
+            torch.nn.init.normal_(self.head.weight, std=0.02)
 
         if config.multi_sent_loss_ratio > 0:
             self.sent_dropout = nn.Dropout(0.1)
             self.sent_classifier = nn.Linear(conf.hidden_size, len(config.multi_sent_class))
             torch.nn.init.normal_(self.sent_classifier.weight, std=0.02)
 
-        if config.do_IO:
+        if config.io_loss_ratio > 0:
             self.token_dropout = nn.Dropout(0.1)
-            if config.loss_type == "lovasz":
+            if config.io_loss_type == "lovasz":
                 self.token_classifier = nn.Linear(conf.hidden_size, 1)
-            elif config.loss_type == 'bce':
+            elif config.io_loss_type == 'bce':
                 self.token_classifier = nn.Linear(conf.hidden_size, 2)
             else:
-                raise NotImplementedError(f"IO LOSS {config.loss_type} Invalid")
+                raise NotImplementedError(f"IO LOSS {config.io_loss_type} Invalid")
 
             torch.nn.init.normal_(self.token_classifier.weight, std=0.02)
 
     def frozen(self, froze_n_layers):
-        for param in self.__getattr__(self.config.model_type).embeddings.parameters():
+        for param in self.model.embeddings.parameters():
             param.requires_grad = False
         print(f"{self.config.model_type} Embedding Frozen")
         for i in range(froze_n_layers):
-            for param in self.__getattr__(self.config.model_type).encoder.layer[i].parameters():
+            for param in self.model.encoder.layer[i].parameters():
                 param.requires_grad = False
             print(f"{self.config.model_type} Encoder Layer {i} Frozen")
 
     def unfrozen(self, frozen_n_layers):
-        for param in self.__getattr__(self.config.model_type).encoder.layer[11].parameters():
+        for param in self.model.encoder.layer[11].parameters():
             if param.requires_grad:
                 return
             break
         for i in range(frozen_n_layers, 12):
-            for param in self.__getattr__(self.config.model_type).encoder.layer[i].parameters():
+            for param in self.model.encoder.layer[i].parameters():
                 param.requires_grad = True
             print(f"{self.config.model_type} Encoder Layer {i} Unfrozen")
 
     def forward(self, ids, mask, token_type_ids):
-        if self.config.model_type == 'roberta':
-            sequence_output, _, out = self.roberta(
+        if 'roberta' in self.config.model_type:
+            sequence_output, _, out = self.model(
                 ids,
                 attention_mask=mask,
                 token_type_ids=token_type_ids
@@ -102,22 +105,30 @@ class TweetModel(transformers.BertPreTrainedModel):
                 decoder_attention_mask=mask,
                 # token_type_ids=token_type_ids
             )
-        elif self.config.model_type == 'albert':
-            sequence_output, _, out = self.albert(
+        elif 'albert' in self.config.model_type:
+            sequence_output, _, out = self.model(
                 ids,
                 attention_mask=mask,
                 token_type_ids=token_type_ids
             )
         # out = self.backbone(ids, attention_mask=mask, token_type_ids=token_type_ids)[-1]
 
-        if self.config.cat_n_layers == 2:
+        if self.config.cat_n_layers == 1:
+            out = out[-1]
+        elif self.config.cat_n_layers == 2:
             out = torch.cat((out[-1], out[-2]), dim=-1)
         elif self.config.cat_n_layers == 3:
             out = torch.cat((out[-1], out[-2], out[-3]), dim=-1)
+        else:
+            raise NotImplementedError()
 
         out = self.drop_out(out)
-        logits = self.l0(out)
-
+        if self.config.conv_head:
+            out = out.transpose(2, 1)
+            logits = self.head(out)
+            logits = logits.transpose(2, 1)
+        else:
+            logits = self.head(out)
         start_logits, end_logits = logits.split(1, dim=-1)
 
         start_logits = start_logits.squeeze(-1)
@@ -129,7 +140,7 @@ class TweetModel(transformers.BertPreTrainedModel):
             cls_logit = self.sent_classifier(cls_hidden_state)
             return start_logits, end_logits, cls_logit
 
-        if self.config.do_IO:
+        if self.config.io_loss_ratio > 0:
             sequence_output = self.token_dropout(sequence_output)
             token_logits = self.token_classifier(sequence_output)
             return start_logits, end_logits, token_logits
@@ -141,6 +152,8 @@ def loss_fn(start_logits, end_logits, start_positions, end_positions,
             cls_logit=None, cls_label=None, token_logits=None, token_labels=None, mask=None, config=None):
 
     if config.mask_pad_loss:
+        start_logits[:, :4] -= 100
+        end_logits[:, :4] -= 100
         start_logits -= (mask == 0) * 1e4
         end_logits -= (mask == 0) * 1e4
 
@@ -154,6 +167,8 @@ def loss_fn(start_logits, end_logits, start_positions, end_positions,
         if config.mask_pad_loss:
             one_hot_start_label[mask == 0] = 0
             one_hot_end_label[mask == 0] = 0
+            one_hot_start_label[:, :4] = 0
+            one_hot_end_label[:, :4] = 0
 
         start_loss = -torch.sum(F.log_softmax(start_logits, dim=1) * one_hot_start_label)/start_logits.size(0)
         end_loss = -torch.sum(F.log_softmax(end_logits, dim=1) * one_hot_end_label)/start_logits.size(0)
@@ -170,17 +185,17 @@ def loss_fn(start_logits, end_logits, start_positions, end_positions,
         # print(total_loss, multi_sent_loss)
         return total_loss + config.multi_sent_loss_ratio * multi_sent_loss
 
-    if not config.do_IO:
+    if not config.io_loss_ratio > 0:
         return total_loss
 
-    if config.loss_type == "lovasz":
+    if config.io_loss_type == "lovasz":
         token_loss = token_lovasz_fn(token_logits, token_labels, mask)
-    elif config.loss_type == 'bce':
+    elif config.io_loss_type == 'bce':
         token_loss = token_loss_fn(token_logits, token_labels, mask)
     else:
-        raise NotImplementedError(f"IO LOSS {config.loss_type} Invalid")
+        raise NotImplementedError(f"IO LOSS {config.io_loss_type} Invalid")
 
-    return total_loss + config.alpha * token_loss
+    return total_loss + config.io_loss_ratio * token_loss
 
 
 def token_lovasz_fn(token_logits, token_labels, mask):
@@ -249,8 +264,8 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
             cls_labels = d["cls_labels"].to(device, dtype=torch.long)
             cls_logits = model_out[2]
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels, config=config)
-        elif not config.do_IO:
-            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, config=config)
+        elif not config.io_loss_ratio > 0:
+            loss = loss_fn(start_logits, end_logits, targets_start, targets_end, mask=mask, config=config)
         else:
             token_logits = model_out[2]
             loss = loss_fn(start_logits, end_logits, targets_start, targets_end,
@@ -327,7 +342,7 @@ def eval_fn(data_loader, model, device, config):
                 cls_logits = model_out[2]
                 cls_labels = d["cls_labels"].to(device, dtype=torch.long)
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end, cls_logits, cls_labels, config=config)
-            elif not config.do_IO:
+            elif not config.io_loss_ratio > 0:
                 loss = loss_fn(start_logits, end_logits, targets_start, targets_end, config=config)
             else:
                 token_logits = model_out[2]
@@ -369,6 +384,7 @@ def train(fold, config):
     df_valid = dfx[dfx.kfold == fold].reset_index(drop=True)
 
     np_train = np.array(df_train)
+
     if config.clean_data:
         # 若要不训练neutral
         # np_train_idx = [i for i, item_i in enumerate(np_train) if item_i[3] != 'neutral']
@@ -384,22 +400,51 @@ def train(fold, config):
             #     continue
             np_train[i] = clean_item(item)
 
-    train_dataset = TweetDataset(
-        # tweet=df_train.text.values,
-        # sentiment=df_train.sentiment.values,
-        # selected_text=df_train.selected_text.values,
-        tweet=np_train[:, 1],
-        sentiment=np_train[:,3],
-        selected_text=np_train[:,2],
-        config=config,
-        multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
-    )
-
+    if config.shuffle_seed == -1:
+        train_dataset = TweetDataset(
+            # tweet=df_train.text.values,
+            # sentiment=df_train.sentiment.values,
+            # selected_text=df_train.selected_text.values,
+            tweet=np_train[:, 1],
+            sentiment=np_train[:,3],
+            selected_text=np_train[:,2],
+            config=config,
+            multi_sentiment_cls = df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
+        )
+    else:
+        import sklearn
+        index = np.arange(len(np_train))
+        index = sklearn.utils.resample(index, random_state=config.shuffle_seed)
+        train_dataset = TweetDataset(
+            tweet=np_train[index][:, 1],
+            sentiment=np_train[index][:, 3],
+            selected_text=np_train[index][:, 2],
+            config=config,
+            multi_sentiment_cls=df_train.extra_sentiment.values if config.multi_sent_loss_ratio > 0 else None,
+        )
+    # train_sampler = RandomSampler(train_dataset)
     train_data_loader = DataLoader(
         train_dataset,
+        # sampler=train_sampler,
         batch_size=config.TRAIN_BATCH_SIZE,
         num_workers=config.n_worker_train,
     )
+
+    np_valid = np.array(df_valid)
+    if config.clean_data:
+        # 若要不训练neutral
+        # np_train_idx = [i for i, item_i in enumerate(np_train) if item_i[3] != 'neutral']
+        # np_train = np_train[np_train_idx]
+
+        # 过滤outlier
+        np_valid_idx = [i for i, item_i in enumerate(np_valid) if item_i[0] not in filter_set]
+        np_valid = np_valid[np_valid_idx]
+
+        # 修正input label
+        for i, item in enumerate(np_valid):
+            if item[3] == 'neutral':
+                continue
+            np_valid[i] = clean_item(item)
 
     valid_dataset = TweetDataset(
         tweet=df_valid.text.values,
@@ -419,7 +464,7 @@ def train(fold, config):
     model = TweetModel(conf=config.model_config, config=config)
     model.to(device)
 
-    num_train_steps = int(len(df_train) / config.TRAIN_BATCH_SIZE * config.EPOCHS)
+    num_train_steps = len(train_data_loader) // config.ACCUMULATION_STEPS * config.EPOCHS
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
     optimizer_parameters = [
@@ -446,7 +491,7 @@ def train(fold, config):
     else:
         raise NotImplementedError()
 
-    es = EarlyStopping(patience=2, mode="max")
+    es = EarlyStopping(patience=3, mode="max")
     print(f"{'-'*10}\nTraining is Starting for fold={fold}")
 
     jaccard_list = []

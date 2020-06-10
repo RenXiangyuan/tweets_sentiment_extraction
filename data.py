@@ -27,7 +27,6 @@ class TweetDataset:
             self.process_data = self.process_data_albert
         else:
             raise NotImplementedError(f"{config.model_type} 不支持")
-        self.smooth = config.smooth
 
         self.multi_sent_loss_ratio = config.multi_sent_loss_ratio
         self.d_multi_sent = config.multi_sent_class

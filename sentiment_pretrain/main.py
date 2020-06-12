@@ -69,8 +69,12 @@ def main():
     config = Config(MODEL_SAVE_DIR = f'/mfs/renxiangyuan/tweets/output/sentiment_pretrain/roberta-squad-5-fold-ak')
 
     train_csv = pd.read_csv('/mfs/renxiangyuan/tweets/data/train_folds.csv')
-    train_np = np.array(train_csv)
     valid_csv = pd.read_csv('/mfs/renxiangyuan/tweets/data/test.csv')
+
+    # train_csv = pd.read_csv('/mfs/renxiangyuan/tweets/data/train_folds_extra.csv')
+    # valid_csv = pd.read_csv('')
+
+    train_np = np.array(train_csv)
     valid_np = np.array(valid_csv)
 
     os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)

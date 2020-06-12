@@ -29,6 +29,10 @@ class SentimentPretrainModel(transformers.BertPreTrainedModel):
         self.head = nn.Linear(config.model_config.hidden_size, 1, bias=False)
         torch.nn.init.normal_(self.head.weight, std=0.02)
 
+        if config.multi_sent_loss_ratio > 0:
+            self.multi_sent_head = nn.Linear(config.model_config.hidden_size, 13, bias=False)
+            torch.nn.init.normal_(self.multi_sent_head.weight, std=0.02)
+
     def frozen(self, froze_n_layers):
         for param in self.model.embeddings.parameters():
             param.requires_grad = False
@@ -58,12 +62,16 @@ class SentimentPretrainModel(transformers.BertPreTrainedModel):
         else:
             raise NotImplementedError(f"{self.config.model_type} 不支持")
 
+        cls = sequence_output[:, 0, :]
+        if self.config.multi_sent_head > 0:
+            cls = self.drop_out(cls)
+            cls = self.multi_sent_head(cls)
         sentiment = sequence_output[:, 1:4, :]
         sentiment = self.drop_out(sentiment)
         sentiment = self.head(sentiment)
         sentiment = sentiment.squeeze(-1)
 
-        return sentiment
+        return cls, sentiment
 
 
 def loss_fn(sentiment, label, config=None):
@@ -72,3 +80,9 @@ def loss_fn(sentiment, label, config=None):
     # sentiment_loss = loss_fct(sentiment.squeeze(-1), label.unsqueeze(1))
 
     return sentiment_loss
+
+
+def multi_sent_loss_fn(cls_logit, label, config=None):
+    loss_fct = nn.CrossEntropyLoss()
+    multi_sent_loss = loss_fct(cls_logit, label)
+    return multi_sent_loss

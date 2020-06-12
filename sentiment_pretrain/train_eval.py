@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 from utils import AverageMeter
-from sentiment_pretrain.model import loss_fn
+from sentiment_pretrain.model import loss_fn, multi_sent_loss_fn
 from data import TweetDataset
 from sentiment_pretrain.model import SentimentPretrainModel
 from transformers import AdamW, get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
@@ -21,6 +21,7 @@ import os
 def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
     model.train()
     losses = AverageMeter()
+    multi_sent_losses = AverageMeter()
     accuracies = AverageMeter()
 
     tk0 = tqdm(data_loader, total=len(data_loader))
@@ -48,13 +49,18 @@ def train_fn(data_loader, model, optimizer, device, config, scheduler=None):
 
         model.zero_grad()
 
-        logits = model(
+        cls_logits, logits = model(
             ids=ids,
             mask=mask,
             token_type_ids=token_type_ids
         )
 
         loss = loss_fn(logits, sentiment, config=config)
+
+        if config.multi_sent_loss_ratio > 0:
+            multi_sent = d["cls_labels"].to(device, dtype=torch.long)
+            loss += multi_sent_loss_fn(cls_logits, multi_sent, config)
+
 
         if config.ACCUMULATION_STEPS > 1:
             loss = loss / config.ACCUMULATION_STEPS
@@ -128,7 +134,7 @@ def train(np_train, np_valid, config):
             selected_text=np_train[:,2],
             sentiment=np_train[:,3],
             config=config,
-            multi_sentiment_cls = None,
+            multi_sentiment_cls = None if config.multi_sent_loss_ratio <= 0 else np_train[:,6],
         )
     else:
         import sklearn

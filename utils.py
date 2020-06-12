@@ -152,19 +152,42 @@ def calculate_jaccard_score(
         idx_start,
         idx_end,
         offsets,
+        io_prob=None,
         verbose=False):
     if idx_end < idx_start:
         idx_end = idx_start
         # idx_start = idx_end
         # return jaccard(target_string.strip(), original_tweet.strip()), original_tweet
+
+    # if io_prob is not None:
+    #     # selected_offsets = offsets[np.where(io_prob >= 0.5)]
+    # #         # for o in selected_offsets:
+    # #         #     if o[1] != 0:
+    # #         #         io_start_index = min(o[0], io_start_index)
+    # #         #         io_end_index = max(o[1], io_end_index)
+    #     io_idx_list = list(np.where(io_prob >= 0.5)[0])
+    #     if len(io_idx_list) > 0:
+    #         io_start_index = min(io_idx_list)
+    #         io_end_index = max(io_idx_list)
+    io_start_index = len(original_tweet)
+    io_end_index = -1
+    io_tokens = []
+    if io_prob is not None:
+        selected_offsets = offsets[np.where(io_prob >= 0.5)]
+        for o in selected_offsets:
+            if o[1] != 0:
+                io_tokens.append(original_tweet[o[0]:o[1]].lstrip(' '))
+    idx_start = min(idx_start, io_start_index)
+    idx_end = max(idx_end, io_end_index)
     filtered_output = ""
     for ix in range(idx_start, idx_end + 1):
         filtered_output += original_tweet[offsets[ix][0]: offsets[ix][1]]
         if (ix + 1) < len(offsets) and offsets[ix][1] < offsets[ix + 1][0]:
             filtered_output += " "
 
-    if sentiment_val == "neutral" or len(original_tweet.split()) < 2:
+    if sentiment_val == "neutral" or len(original_tweet.split()) < 2 or len(filtered_output) >= 0.7 * len(original_tweet):
         filtered_output = original_tweet
+
 
     if sentiment_val != "neutral" and verbose == True:
         if filtered_output.strip().lower() != target_string.strip().lower():
@@ -172,6 +195,8 @@ def calculate_jaccard_score(
             print(f"Output= {filtered_output.strip()}")
             print(f"Target= {target_string.strip()}")
             print(f"Tweet= {original_tweet.strip()}")
+            if io_prob is not None:
+                print(f"Io= {io_tokens}")
             print("********************************")
 
     jac = jaccard(target_string.strip(), filtered_output.strip())

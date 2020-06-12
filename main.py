@@ -270,19 +270,20 @@ if __name__ == "__main__":
     # args.cat_n_layers = 2
     # args.epochs = 3
     # args.smooth = 0
-    args.cuda_device = '6'
+    args.cuda_device = '9'
+    args.io_loss_ratio = 0.4
     print("Warning, Use Hardcode Setting, not argparser Setting")
 
     mode = [
-        "train",
+       #  "train",
         # "test"
-        # "evaluate",
+        "evaluate",
     ]
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_device
     main(args, mode)
 
-    import copy
+    # import copy
 
     # args1 = copy.deepcopy(args)
     # args1.model_type = "roberta-base"

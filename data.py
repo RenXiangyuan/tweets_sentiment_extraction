@@ -52,6 +52,7 @@ class TweetDataset:
             'targets_start': torch.tensor(data["targets_start"], dtype=torch.long),
             'targets_end': torch.tensor(data["targets_end"], dtype=torch.long),
             'orig_tweet': data["orig_tweet"],
+            'orig_orig': data['orig_orig'],
             'orig_selected': data["orig_selected"],
             'sentiment': data["sentiment"],
             'offsets': torch.tensor(data["offsets"], dtype=torch.long)
@@ -65,6 +66,7 @@ class TweetDataset:
 
     @staticmethod
     def process_data_roberta(tweet, selected_text, sentiment, tokenizer, max_len):
+        orig_tweet = str(tweet)
         tweet = " " + " ".join(str(tweet).split())
         selected_text = " " + " ".join(str(selected_text).split())
 
@@ -129,6 +131,7 @@ class TweetDataset:
             'targets_end': targets_end,
             'orig_tweet': tweet,
             'orig_selected': selected_text,
+            'orig_orig': orig_tweet,
             'sentiment': sentiment,
             'offsets': tweet_offsets
         }

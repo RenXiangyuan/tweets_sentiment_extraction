@@ -145,6 +145,33 @@ def clean_item(item):
 
     return item
 
+
+def post_process_shift(sentiment_val, original_tweet, filtered_output, orig_orig):
+    """
+
+    :param sentiment_val:
+    :param original_tweet:
+    :param filtered_output:
+    :param orig_orig: roberta处理前的tweet
+    :return:
+    """
+    if sentiment_val == "neutral" or len(original_tweet.split()) < 2 or len(filtered_output) >= 0.7 * len(original_tweet):
+        filtered_output = original_tweet
+    elif orig_orig is not None and orig_orig.startswith('  ') and sentiment_val != 'neutral':
+
+        idx = orig_orig.find(filtered_output.strip())
+        if idx > -1 and orig_orig.lstrip().find(filtered_output.strip()) > 0:
+            # tmp = filtered_output
+            shift = orig_orig[:idx].split(' ').count('')
+            if shift == 2:  # 一般shift是2的时候在前面直接加两个char
+                filtered_output = orig_orig[idx - 2 :idx] + filtered_output
+            else:
+                shifted_idx = idx-shift + 1
+                filtered_output = orig_orig[shifted_idx: shifted_idx + len(filtered_output) + 1] # TODO：1可能是shift - 2
+
+    return filtered_output
+
+
 def calculate_jaccard_score(
         original_tweet,
         target_string,
@@ -153,7 +180,8 @@ def calculate_jaccard_score(
         idx_end,
         offsets,
         io_prob=None,
-        verbose=False):
+        verbose=False,
+        orig_orig=None):
     if idx_end < idx_start:
         idx_end = idx_start
         # idx_start = idx_end
@@ -184,10 +212,7 @@ def calculate_jaccard_score(
         filtered_output += original_tweet[offsets[ix][0]: offsets[ix][1]]
         if (ix + 1) < len(offsets) and offsets[ix][1] < offsets[ix + 1][0]:
             filtered_output += " "
-
-    if sentiment_val == "neutral" or len(original_tweet.split()) < 2 or len(filtered_output) >= 0.7 * len(original_tweet):
-        filtered_output = original_tweet
-
+    filtered_output = post_process_shift(sentiment_val, original_tweet, filtered_output, orig_orig)
 
     if sentiment_val != "neutral" and verbose == True:
         if filtered_output.strip().lower() != target_string.strip().lower():

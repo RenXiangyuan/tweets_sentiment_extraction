@@ -333,6 +333,7 @@ def eval_fn(data_loader, model, device, config):
             targets_end = d["targets_end"]
             labels = d["labels"]
             offsets = d["offsets"].numpy()
+            orig_orig = d['orig_orig']
 
             ids = ids.to(device, dtype=torch.long)
             token_type_ids = token_type_ids.to(device, dtype=torch.long)
@@ -347,6 +348,14 @@ def eval_fn(data_loader, model, device, config):
                 token_type_ids=token_type_ids
             )
             start_logits, end_logits = model_out[0], model_out[1]
+            if len(model_out) > 2:
+                io_logits = model_out[2]
+                io_probs = F.sigmoid(io_logits).detach().cpu().numpy()
+            else:
+                io_probs = None
+
+
+
 
             if config.multi_sent_loss_ratio > 0:
                 cls_logits = model_out[2]
@@ -364,13 +373,19 @@ def eval_fn(data_loader, model, device, config):
             for px, tweet in enumerate(orig_tweet):
                 selected_tweet = orig_selected[px]
                 tweet_sentiment = sentiment[px]
+                if io_probs is not None:
+                    io_prob = io_probs[px].squeeze()
+                else:
+                    io_prob = None
                 jaccard_score, _ = calculate_jaccard_score(
                     original_tweet=tweet,
                     target_string=selected_tweet,
                     sentiment_val=tweet_sentiment,
                     idx_start=np.argmax(outputs_start[px, :]),
                     idx_end=np.argmax(outputs_end[px, :]),
-                    offsets=offsets[px]
+                    offsets=offsets[px],
+                    io_prob=io_prob,
+                    orig_orig=orig_orig[px]
                 )
                 jaccard_scores.append(jaccard_score)
 
@@ -628,6 +643,7 @@ def ensemble_infer(model_paths, config):
             # targets_start = d["targets_start"]
             # targets_end = d["targets_end"]
             offsets = d["offsets"].numpy()
+            orig_orig = d['orig_orig']
 
             ids = ids.to(device, dtype=torch.long)
             token_type_ids = token_type_ids.to(device, dtype=torch.long)
@@ -697,7 +713,8 @@ def ensemble_infer(model_paths, config):
                     sentiment_val=tweet_sentiment,
                     idx_start=np.argmax(outputs_start[px, :]),
                     idx_end=np.argmax(outputs_end[px, :]),
-                    offsets=offsets[px]
+                    offsets=offsets[px],
+                    orig_orig=orig_orig
                 )
                 final_output.append(output_sentence)
 
